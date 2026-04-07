@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Credentials — never commit
+credentials.json
+
+# Data files — contain sensitive order data
+*.csv
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
