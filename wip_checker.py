@@ -9,6 +9,9 @@ Also computes cohort intelligence — grouping orders by age since they entered
 bill setup — to highlight ageing patterns across the pipeline.
 """
 
+import json
+import os
+
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -56,7 +59,18 @@ def detect_col(headers, field, required=False):
 def get_wip_data(wip_url: str) -> list[dict]:
     """Read all active tabs from the WIP Google Sheet and normalise into flat rows.
     Each row carries its source tab name so we can identify the blocker category."""
-    creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=SCOPES)
+    # Local file for dev, GOOGLE_CREDENTIALS env var for Railway production
+    env_creds = os.environ.get("GOOGLE_CREDENTIALS")
+    if env_creds:
+        info = json.loads(env_creds)
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    elif CREDENTIALS_PATH.exists():
+        creds = Credentials.from_service_account_file(CREDENTIALS_PATH, scopes=SCOPES)
+    else:
+        raise RuntimeError(
+            "No Google credentials found. Set the GOOGLE_CREDENTIALS env var "
+            "or place credentials.json in the project root."
+        )
     client = gspread.authorize(creds)
     sheet = client.open_by_url(wip_url)
 
