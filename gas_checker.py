@@ -43,19 +43,33 @@ def is_gas_assigned(gas_value):
     return not _is_blank(gas_value, NULL_GAS_VALUES)
 
 
-def classify_row(row, mprn_col, gas_col, business_type_col):
+def _bill_name_has_gas(row, bill_name_col):
+    """Returns True when the bill name explicitly mentions gas
+    (e.g. 'Octopus - Gas', 'British Gas - Gas', 'EDF Gas Tariff').
+    Used as the strongest signal that a gas service exists on the order."""
+    if not bill_name_col:
+        return False
+    raw = row.get(bill_name_col)
+    if pd.isna(raw):
+        return False
+    return "gas" in str(raw).strip().lower()
+
+
+def classify_row(row, mprn_col, gas_col, business_type_col, bill_name_col=None):
     """V2 four-flag classifier.
 
     Rules (evaluated top-down):
-      • business_type == 'build-to-rent' → Elec only (BTR)   (BTR sites are
+      • business_type == 'build-to-rent'  → Elec only (BTR)   (BTR sites are
         intentionally electricity-only by design — not an error)
-      • mprn null AND gas assigned       → Gas error          (a gas supplier
+      • bill name contains 'gas' AND mprn null → Review manually   (gas bill
+        sitting on a property with no gas meter — needs a human eye)
+      • mprn null AND gas assigned        → Gas error          (a gas supplier
         has been assigned but no MPRN exists — definite data problem)
-      • mprn present AND gas assigned    → Review manually    (both flagged —
+      • mprn present AND gas assigned     → Review manually    (both flagged —
         could be legitimate or could be a duplicate switch — needs human eye)
-      • mprn null (gas not assigned)     → Review manually    (incomplete data —
+      • mprn null (gas not assigned)      → Review manually    (incomplete data —
         we can't confidently say the property is gas-free without a human check)
-      • mprn present                     → Gas ok
+      • mprn present                      → Gas ok
     """
     btype = ""
     if business_type_col:
@@ -67,6 +81,12 @@ def classify_row(row, mprn_col, gas_col, business_type_col):
 
     mprn_blank   = is_electricity_only(row.get(mprn_col)) if mprn_col else True
     gas_assigned = is_gas_assigned(row.get(gas_col)) if gas_col else False
+    bill_has_gas = _bill_name_has_gas(row, bill_name_col)
+
+    # Bill name explicitly says "gas" but the property has no MPRN — never
+    # flag this as Gas error (too definitive). Always send to manual review.
+    if mprn_blank and bill_has_gas:
+        return FLAG_REVIEW
 
     if mprn_blank and gas_assigned:
         return FLAG_ERROR
@@ -92,6 +112,7 @@ def run_gas_check_v2(df: pd.DataFrame) -> dict:
         "mprn":          True,
         "gas":           False,
         "business_type": False,
+        "bill_name":     False,
     }
     col_map = detect_all_columns(df, "Gas checker sheet", fields)
 
@@ -101,12 +122,13 @@ def run_gas_check_v2(df: pd.DataFrame) -> dict:
     business_type_col = col_map.get("business_type")
     order_col         = col_map.get("order_id")
     address_col       = col_map.get("address")
+    bill_name_col     = col_map.get("bill_name")
 
     df = df.copy()
     df[tseg_col] = normalise_tseg_series(df[tseg_col])
 
     df["flag"] = df.apply(
-        lambda r: classify_row(r, mprn_col, gas_col, business_type_col),
+        lambda r: classify_row(r, mprn_col, gas_col, business_type_col, bill_name_col),
         axis=1,
     )
 
@@ -115,7 +137,7 @@ def run_gas_check_v2(df: pd.DataFrame) -> dict:
     # having to interpret the rule-based flag.
     df["fuel"] = df[mprn_col].apply(classify_fuel)
 
-    out_cols = [c for c in [order_col, tseg_col, address_col, mprn_col, gas_col, business_type_col, "fuel", "flag"] if c]
+    out_cols = [c for c in [order_col, tseg_col, address_col, bill_name_col, mprn_col, gas_col, business_type_col, "fuel", "flag"] if c]
     out_cols = list(dict.fromkeys(out_cols))
     result = df[out_cols].copy().fillna("")
 
