@@ -98,6 +98,32 @@ def normalise_tseg_series(series):
     return series.apply(lambda v: normalise_tseg_id(v) or "")
 
 
+# ── Fuel classification ──────────────────────────────────────────────────────
+
+# Values that count as "no MPRN" — i.e. no gas meter recorded against the property.
+_NULL_MPRN_TOKENS = {"unknown", "n/a", "none", "null", "not found", "-", "", "nan"}
+
+
+def has_gas(mprn_value) -> bool:
+    """Returns True when the MPRN cell contains a real value.
+    Empty / NaN / placeholder strings all count as 'no gas'."""
+    if mprn_value is None:
+        return False
+    try:
+        if pd.isna(mprn_value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return str(mprn_value).strip().lower() not in _NULL_MPRN_TOKENS
+
+
+def classify_fuel(mprn_value) -> str:
+    """Returns a human-friendly fuel classification used across all modules
+    so the ops team can see at a glance whether a property has gas or not.
+    Returns 'Has gas' when an MPRN is present, otherwise 'Elec only'."""
+    return "Has gas" if has_gas(mprn_value) else "Elec only"
+
+
 # ── RAG / SLA helpers ────────────────────────────────────────────────────────
 
 def compute_days_elapsed(df, date_col):

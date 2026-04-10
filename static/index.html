@@ -402,6 +402,15 @@
       word-break: break-word;
     }
 
+    /* Fuel tag — Has gas / Elec only — used across all three modules */
+    .fuel-tag {
+      display: inline-flex; align-items: center;
+      padding: 2px 8px; border-radius: 20px;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.02em; white-space: nowrap;
+    }
+    .fuel-tag.has-gas { background: var(--pill-green-bg); color: var(--pill-green-fg); }
+    .fuel-tag.elec    { background: #1E3A8A; color: #fff; }
+
     /* TSEG order_status badges */
     .tseg-status { padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
     .tseg-status.active      { background: var(--pill-green-bg); color: var(--pill-green-fg); }
@@ -872,6 +881,7 @@
       const wrap = document.getElementById('gas-table-wrap')
       wrap.innerHTML = buildTable(data.columns, data.rows, (row, col) => {
         if (col === 'flag') return FP[row[col]] || row[col]
+        if (col === 'fuel') return fuelPill(row[col])
         return row[col] ?? ''
       })
       wrap.style.display = 'block'; wrap.classList.add('fade-in')
@@ -1028,6 +1038,7 @@
           const c = row['rag'] === 'breached' ? 'var(--red)' : row['rag'] === 'at_risk' ? 'var(--amber)' : 'var(--green)'
           return '<span style="font-size:18px;font-weight:700;color:' + c + ';">' + row[col] + '</span><span style="font-size:11px;color:var(--text-muted);margin-left:2px;">d</span>'
         }
+        if (col === 'fuel') return fuelPill(row[col])
         return row[col] ?? ''
       })
       wrap.style.display = 'block'; wrap.classList.add('fade-in')
@@ -1416,6 +1427,16 @@
       }
     }
 
+    // Renders the at-a-glance fuel tag used across all three modules.
+    // Driven by the new MPRN-aware classify_fuel helper on the backend.
+    function fuelPill(val) {
+      if (val == null || val === '') return '<span style="color:var(--text-muted);">—</span>'
+      const v = String(val).trim().toLowerCase()
+      if (v === 'has gas') return '<span class="fuel-tag has-gas">Has gas</span>'
+      if (v === 'elec only' || v === 'electricity only') return '<span class="fuel-tag elec">Elec only</span>'
+      return '<span class="fuel-tag elec">' + val + '</span>'
+    }
+
     function _ragCell(row) {
       const cls = { breached: 'pill-red', at_risk: 'pill-amber', ok: 'pill-green' }[row.rag] || ''
       const label = { breached: 'Breached', at_risk: 'At risk', ok: 'Within SLA' }[row.rag] || row.rag || ''
@@ -1464,6 +1485,7 @@
       html += '<div class="wip-zone">'
       html += '<div class="wip-zone-header zone-homebox">Homebox</div>'
       html += _zoneRow('TSEG ID', tsegVal)
+      html += _zoneRow('Fuel', fuelPill(row.fuel))
       html += _zoneRow('Bill state', billState)
       html += _zoneRow('Bill state updated', formatDate(billStateUpd) || billStateUpd)
       html += _zoneRow('Cohort', cohort)
@@ -1502,8 +1524,8 @@
       const hlFn = wipActiveFilter === 'all' ? (row => !row.wip_tab) : null
 
       // Header columns shown by default
-      const headers = ['', 'ORDER ID', 'PROPERTY', 'BILL PROVIDER', 'DAYS ELAPSED', 'RAG', 'WIP TAB']
-      const sortableMap = { 'ORDER ID': cm.order, 'PROPERTY': cm.property, 'BILL PROVIDER': cm.provider, 'DAYS ELAPSED': 'days_elapsed', 'RAG': 'rag', 'WIP TAB': 'wip_tab' }
+      const headers = ['', 'ORDER ID', 'PROPERTY', 'FUEL', 'BILL PROVIDER', 'DAYS ELAPSED', 'RAG', 'WIP TAB']
+      const sortableMap = { 'ORDER ID': cm.order, 'PROPERTY': cm.property, 'FUEL': 'fuel', 'BILL PROVIDER': cm.provider, 'DAYS ELAPSED': 'days_elapsed', 'RAG': 'rag', 'WIP TAB': 'wip_tab' }
 
       let html = '<div class="table-wrap"><div class="table-scroll"><table><thead><tr>'
       headers.forEach(h => {
@@ -1531,6 +1553,7 @@
         html += '<td><span class="wip-expand-arrow' + (isOpen ? ' open' : '') + '" onclick="toggleWIPRow(\'' + key.replace(/\\/g, '').replace(/'/g, "\\'") + '\')">&#9656;</span></td>'
         html += '<td>' + (cm.order ? (row[cm.order] || '') : '') + '</td>'
         html += '<td>' + (cm.property ? (row[cm.property] || '') : '') + '</td>'
+        html += '<td>' + fuelPill(row.fuel) + '</td>'
         html += '<td>' + (cm.provider ? (row[cm.provider] || '') : '') + '</td>'
         html += '<td>' + _daysCell(row) + '</td>'
         html += '<td>' + _ragCell(row) + '</td>'

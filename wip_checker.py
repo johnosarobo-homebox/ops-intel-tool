@@ -24,6 +24,7 @@ from utils import (
     ColumnNotFoundError,
     normalise_tseg_id,
     normalise_tseg_series,
+    classify_fuel,
 )
 from tseg_api import get_contract
 
@@ -163,6 +164,7 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
         "updated_at":    True,
         "status":        True,
         "order_started": False,
+        "mprn":          False,
     }
 
     col_map = {}
@@ -178,6 +180,7 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
     address_col      = col_map.get("address")
     provider_col     = col_map.get("provider")
     order_started_col = col_map.get("order_started")
+    mprn_col         = col_map.get("mprn")
 
     trevor = trevor_df.copy()
 
@@ -188,6 +191,14 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
     trevor["_join_key"] = trevor[tseg_col]
     trevor["days_elapsed"] = compute_days_elapsed(trevor, updated_col)
     trevor["rag"] = trevor["days_elapsed"].apply(rag_status)
+
+    # Fuel tag — derived from the MPRN column when present in the Trevor export.
+    # When the column is missing the fuel field is left blank so the frontend
+    # can render a "—" rather than guessing.
+    if mprn_col and mprn_col in trevor.columns:
+        trevor["fuel"] = trevor[mprn_col].apply(classify_fuel)
+    else:
+        trevor["fuel"] = ""
 
     # Cohort assignment based on order_started_bill_setups_at.
     # Groups orders into 0-30 / 30-60 / 60+ day buckets to surface ageing patterns.
@@ -215,7 +226,7 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
 
     # Left join preserves all Trevor rows — unmatched orders get empty WIP fields
     keep = [c for c in [order_col, tseg_col, address_col, provider_col, updated_col, status_col,
-                         "days_elapsed", "rag", "cohort_days", "cohort"] if c]
+                         "days_elapsed", "rag", "cohort_days", "cohort", "fuel"] if c]
     merged = trevor[keep + ["_join_key"]].merge(
         wip_df, on="_join_key", how="left"
     ).drop(columns=["_join_key"])

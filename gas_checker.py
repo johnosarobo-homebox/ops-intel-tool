@@ -9,6 +9,7 @@ from utils import (
     ColumnNotFoundError,
     PATTERNS,
     normalise_tseg_series,
+    classify_fuel,
 )
 
 
@@ -43,16 +44,18 @@ def is_gas_assigned(gas_value):
 
 
 def classify_row(row, mprn_col, gas_col, business_type_col):
-    """V2 four-flag classifier — replaces the old 3-flag logic.
+    """V2 four-flag classifier.
 
-    Rules:
+    Rules (evaluated top-down):
       • business_type == 'build-to-rent' → Elec only (BTR)   (BTR sites are
         intentionally electricity-only by design — not an error)
       • mprn null AND gas assigned       → Gas error          (a gas supplier
         has been assigned but no MPRN exists — definite data problem)
       • mprn present AND gas assigned    → Review manually    (both flagged —
         could be legitimate or could be a duplicate switch — needs human eye)
-      • everything else                  → Gas ok
+      • mprn null (gas not assigned)     → Review manually    (incomplete data —
+        we can't confidently say the property is gas-free without a human check)
+      • mprn present                     → Gas ok
     """
     btype = ""
     if business_type_col:
@@ -68,6 +71,9 @@ def classify_row(row, mprn_col, gas_col, business_type_col):
     if mprn_blank and gas_assigned:
         return FLAG_ERROR
     if (not mprn_blank) and gas_assigned:
+        return FLAG_REVIEW
+    if mprn_blank:
+        # MPRN missing — incomplete data, never auto-pass as Gas ok
         return FLAG_REVIEW
     return FLAG_OK
 
@@ -104,7 +110,12 @@ def run_gas_check_v2(df: pd.DataFrame) -> dict:
         axis=1,
     )
 
-    out_cols = [c for c in [order_col, tseg_col, address_col, mprn_col, gas_col, business_type_col, "flag"] if c]
+    # At-a-glance fuel tag — surfaces "Has gas" / "Elec only" alongside the flag
+    # so the ops team can immediately see which properties have gas without
+    # having to interpret the rule-based flag.
+    df["fuel"] = df[mprn_col].apply(classify_fuel)
+
+    out_cols = [c for c in [order_col, tseg_col, address_col, mprn_col, gas_col, business_type_col, "fuel", "flag"] if c]
     out_cols = list(dict.fromkeys(out_cols))
     result = df[out_cols].copy().fillna("")
 

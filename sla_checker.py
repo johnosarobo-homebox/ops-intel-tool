@@ -1,6 +1,12 @@
 import pandas as pd
 
-from utils import detect_column, compute_days_elapsed, rag_status, ColumnNotFoundError
+from utils import (
+    detect_column,
+    compute_days_elapsed,
+    rag_status,
+    ColumnNotFoundError,
+    classify_fuel,
+)
 
 AWAITING_KEYWORDS = ["feedback"]
 
@@ -15,6 +21,7 @@ OPTIONAL_FIELDS = {
     "address":  False,
     "provider": False,
     "issue":    False,
+    "mprn":     False,
 }
 
 
@@ -33,6 +40,7 @@ def run_sla_check(df: pd.DataFrame) -> dict:
     address_col  = col_map.get("address")
     provider_col = col_map.get("provider")
     issue_col    = col_map.get("issue")
+    mprn_col     = col_map.get("mprn")
 
     df = df.copy()
     df["_status_lower"] = df[status_col].astype(str).str.lower().str.strip()
@@ -43,6 +51,13 @@ def run_sla_check(df: pd.DataFrame) -> dict:
 
     awaiting["days_elapsed"] = compute_days_elapsed(awaiting, updated_col)
     awaiting["rag"] = awaiting["days_elapsed"].apply(rag_status)
+
+    # Fuel tag — only present if Trevor exports the MPRN column.
+    # When MPRN is missing the fuel column is omitted entirely so we don't
+    # mislead anyone with a hard-coded "Elec only" assumption.
+    if mprn_col:
+        awaiting["fuel"] = awaiting[mprn_col].apply(classify_fuel)
+
     awaiting = awaiting.sort_values("days_elapsed", ascending=False)
 
     out_cols = []
@@ -50,6 +65,8 @@ def run_sla_check(df: pd.DataFrame) -> dict:
         if c and c in awaiting.columns and c not in out_cols:
             out_cols.append(c)
     out_cols += ["days_elapsed", "rag"]
+    if mprn_col:
+        out_cols.append("fuel")
 
     result = awaiting[out_cols].copy().fillna("")
 
