@@ -18,10 +18,11 @@ REQUIRED_FIELDS = {
 }
 
 OPTIONAL_FIELDS = {
-    "address":  False,
-    "provider": False,
-    "issue":    False,
-    "mprn":     False,
+    "address":   False,
+    "provider":  False,
+    "issue":     False,
+    "mprn":      False,
+    "bill_name": False,
 }
 
 
@@ -33,14 +34,15 @@ def run_sla_check(df: pd.DataFrame) -> dict:
         if match:
             col_map[field] = match
 
-    order_col    = col_map["order_id"]
-    tseg_col     = col_map["tseg_id"]
-    updated_col  = col_map["updated_at"]
-    status_col   = col_map["status"]
-    address_col  = col_map.get("address")
-    provider_col = col_map.get("provider")
-    issue_col    = col_map.get("issue")
-    mprn_col     = col_map.get("mprn")
+    order_col     = col_map["order_id"]
+    tseg_col      = col_map["tseg_id"]
+    updated_col   = col_map["updated_at"]
+    status_col    = col_map["status"]
+    address_col   = col_map.get("address")
+    provider_col  = col_map.get("provider")
+    issue_col     = col_map.get("issue")
+    mprn_col      = col_map.get("mprn")
+    bill_name_col = col_map.get("bill_name")
 
     df = df.copy()
     df["_status_lower"] = df[status_col].astype(str).str.lower().str.strip()
@@ -60,8 +62,15 @@ def run_sla_check(df: pd.DataFrame) -> dict:
 
     awaiting = awaiting.sort_values("days_elapsed", ascending=False)
 
+    # Bill name (e.g. "Octopus - Gas") is preferred over plain supplier name
+    # in the table because it lets the ops team spot gas bills on elec-only
+    # properties at a glance — those are typically what need to be deleted.
+    # The supplier breakdown chart further down still groups by provider so
+    # the per-supplier rollup remains intact.
+    table_provider_col = bill_name_col or provider_col
+
     out_cols = []
-    for c in [order_col, tseg_col, address_col, provider_col, issue_col, updated_col, status_col]:
+    for c in [order_col, tseg_col, address_col, table_provider_col, issue_col, updated_col, status_col]:
         if c and c in awaiting.columns and c not in out_cols:
             out_cols.append(c)
     out_cols += ["days_elapsed", "rag"]
@@ -75,9 +84,11 @@ def run_sla_check(df: pd.DataFrame) -> dict:
     at_risk        = int((result["rag"] == "at_risk").sum())
     ok             = int((result["rag"] == "ok").sum())
 
+    # Supplier breakdown is computed from the full `awaiting` frame so it works
+    # regardless of whether the table column is bill_name or provider.
     supplier_breakdown = []
-    if provider_col and provider_col in result.columns:
-        for supplier, group in result.groupby(provider_col):
+    if provider_col and provider_col in awaiting.columns:
+        for supplier, group in awaiting.groupby(provider_col):
             if not supplier:
                 continue
             supplier_breakdown.append({

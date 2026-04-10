@@ -24,6 +24,7 @@ PATTERNS = {
     "updated_at":    ["updated_at", "state_updated", "bill_state_updated"],
     "status":        ["bill_state", "state", "status"],
     "provider":      ["provider", "supplier", "bill_provider"],
+    "bill_name":     ["bill_name", "billname", "bill name"],
     "order_started": ["order_started_bill_setups_at", "order_started", "started_bill_setups"],
     "issue":         ["issue", "lifecycle_issue", "lifecycle issue"],
     "business_type": ["business_type", "businesstype", "business type"],
