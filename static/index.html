@@ -1524,8 +1524,12 @@
       const hlFn = wipActiveFilter === 'all' ? (row => !row.wip_tab) : null
 
       // Header columns shown by default
-      const headers = ['', 'ORDER ID', 'PROPERTY', 'FUEL', 'BILL PROVIDER', 'DAYS ELAPSED', 'RAG', 'WIP TAB']
-      const sortableMap = { 'ORDER ID': cm.order, 'PROPERTY': cm.property, 'FUEL': 'fuel', 'BILL PROVIDER': cm.provider, 'DAYS ELAPSED': 'days_elapsed', 'RAG': 'rag', 'WIP TAB': 'wip_tab' }
+      const headers = ['', 'ORDER ID', 'TSEG ID', 'PROPERTY', 'FUEL', 'BILL PROVIDER', 'BILL STATE', 'DAYS ELAPSED', 'RAG', 'WIP TAB']
+      const sortableMap = {
+        'ORDER ID': cm.order, 'TSEG ID': cm.tseg, 'PROPERTY': cm.property,
+        'FUEL': 'fuel', 'BILL PROVIDER': cm.provider, 'BILL STATE': cm.billState,
+        'DAYS ELAPSED': 'days_elapsed', 'RAG': 'rag', 'WIP TAB': 'wip_tab'
+      }
 
       let html = '<div class="table-wrap"><div class="table-scroll"><table><thead><tr>'
       headers.forEach(h => {
@@ -1552,9 +1556,11 @@
         html += '<tr' + hl + '>'
         html += '<td><span class="wip-expand-arrow' + (isOpen ? ' open' : '') + '" onclick="toggleWIPRow(\'' + key.replace(/\\/g, '').replace(/'/g, "\\'") + '\')">&#9656;</span></td>'
         html += '<td>' + (cm.order ? (row[cm.order] || '') : '') + '</td>'
+        html += '<td>' + (cm.tseg ? (row[cm.tseg] || '') : '') + '</td>'
         html += '<td>' + (cm.property ? (row[cm.property] || '') : '') + '</td>'
         html += '<td>' + fuelPill(row.fuel) + '</td>'
         html += '<td>' + (cm.provider ? (row[cm.provider] || '') : '') + '</td>'
+        html += '<td>' + (cm.billState ? (row[cm.billState] || '') : '') + '</td>'
         html += '<td>' + _daysCell(row) + '</td>'
         html += '<td>' + _ragCell(row) + '</td>'
         html += '<td>' + _wipTabCell(row.wip_tab) + '</td>'
