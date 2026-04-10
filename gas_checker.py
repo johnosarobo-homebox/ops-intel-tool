@@ -3,30 +3,131 @@ import argparse
 import sys
 from datetime import date
 
-from utils import detect_column, detect_all_columns, ColumnNotFoundError, PATTERNS
+from utils import (
+    detect_column,
+    detect_all_columns,
+    ColumnNotFoundError,
+    PATTERNS,
+    normalise_tseg_series,
+)
 
 
-# ── Core logic ────────────────────────────────────────────────────────────────
+# ── Flag labels (V2) ─────────────────────────────────────────────────────────
 
-NULL_MPRN_VALUES = {"unknown", "n/a", "none", "null", "not found", "-", ""}
+FLAG_BTR    = "Elec only (BTR)"
+FLAG_ERROR  = "Gas error"
+FLAG_REVIEW = "Review manually"
+FLAG_OK     = "Gas ok"
+
+# Treated as "no MPRN" — i.e. no gas meter recorded against this property
+NULL_MPRN_VALUES = {"unknown", "n/a", "none", "null", "not found", "-", "", "nan"}
+
+# Treated as "no gas supplier assigned"
+NULL_GAS_VALUES = {"unknown", "n/a", "none", "null", "not found", "-", "", "nan", "0"}
+
+
+def _is_blank(value, blanks):
+    if pd.isna(value):
+        return True
+    return str(value).strip().lower() in blanks
 
 
 def is_electricity_only(mprn_value):
-    """
-    Returns True if the MPRN value indicates no gas meter is present.
-    Catches: blank, None/NaN, 'unknown', 'N/A', 'none', 'null', '-'
-    """
-    if pd.isna(mprn_value):
-        return True
-    return str(mprn_value).strip().lower() in NULL_MPRN_VALUES
+    """Returns True when the MPRN cell is empty / unknown / placeholder."""
+    return _is_blank(mprn_value, NULL_MPRN_VALUES)
 
+
+def is_gas_assigned(gas_value):
+    """Returns True when a gas supplier has been assigned to the property."""
+    return not _is_blank(gas_value, NULL_GAS_VALUES)
+
+
+def classify_row(row, mprn_col, gas_col, business_type_col):
+    """V2 four-flag classifier — replaces the old 3-flag logic.
+
+    Rules:
+      • business_type == 'build-to-rent' → Elec only (BTR)   (BTR sites are
+        intentionally electricity-only by design — not an error)
+      • mprn null AND gas assigned       → Gas error          (a gas supplier
+        has been assigned but no MPRN exists — definite data problem)
+      • mprn present AND gas assigned    → Review manually    (both flagged —
+        could be legitimate or could be a duplicate switch — needs human eye)
+      • everything else                  → Gas ok
+    """
+    btype = ""
+    if business_type_col:
+        raw = row.get(business_type_col)
+        if not pd.isna(raw):
+            btype = str(raw).strip().lower()
+    if btype == "build-to-rent":
+        return FLAG_BTR
+
+    mprn_blank   = is_electricity_only(row.get(mprn_col)) if mprn_col else True
+    gas_assigned = is_gas_assigned(row.get(gas_col)) if gas_col else False
+
+    if mprn_blank and gas_assigned:
+        return FLAG_ERROR
+    if (not mprn_blank) and gas_assigned:
+        return FLAG_REVIEW
+    return FLAG_OK
+
+
+def run_gas_check_v2(df: pd.DataFrame) -> dict:
+    """Single-source gas check — reads everything from the Trevor Gas-checker
+    sheet (which already contains all relevant columns: bill_payment_reference,
+    mprn, gas_assigned, business_type, etc.). No separate TSEG file needed.
+
+    Returns a dict shaped for the FastAPI response (summary / columns / rows).
+    """
+    fields = {
+        "tseg_id":       True,
+        "order_id":      False,
+        "address":       False,
+        "mprn":          True,
+        "gas":           False,
+        "business_type": False,
+    }
+    col_map = detect_all_columns(df, "Gas checker sheet", fields)
+
+    tseg_col          = col_map["tseg_id"]
+    mprn_col          = col_map["mprn"]
+    gas_col           = col_map.get("gas")
+    business_type_col = col_map.get("business_type")
+    order_col         = col_map.get("order_id")
+    address_col       = col_map.get("address")
+
+    df = df.copy()
+    df[tseg_col] = normalise_tseg_series(df[tseg_col])
+
+    df["flag"] = df.apply(
+        lambda r: classify_row(r, mprn_col, gas_col, business_type_col),
+        axis=1,
+    )
+
+    out_cols = [c for c in [order_col, tseg_col, address_col, mprn_col, gas_col, business_type_col, "flag"] if c]
+    out_cols = list(dict.fromkeys(out_cols))
+    result = df[out_cols].copy().fillna("")
+
+    counts = result["flag"].value_counts().to_dict()
+    return {
+        "summary": {
+            "total":     int(len(result)),
+            "elec_btr":  int(counts.get(FLAG_BTR, 0)),
+            "gas_error": int(counts.get(FLAG_ERROR, 0)),
+            "review":    int(counts.get(FLAG_REVIEW, 0)),
+            "gas_ok":    int(counts.get(FLAG_OK, 0)),
+        },
+        "columns": result.columns.tolist(),
+        "rows":    result.to_dict(orient="records"),
+    }
+
+
+# ── Legacy two-source flagger — preserved for the existing /run-gas endpoint ─
 
 def flag_order(row, homebox_map, tseg_map):
-    """
-    Determine the flag for a single merged row.
-    Electricity-only = MPRN is null/unknown on Homebox side.
-    Extra confidence check: if TSEG data also has an MPRN column, cross-reference it.
-    """
+    """Legacy 3-flag classifier still used by the CSV-upload /run-gas endpoint.
+    The four-flag V2 classifier above (classify_row / run_gas_check_v2) replaces
+    this when reading directly from the Trevor Gas-checker sheet."""
     hb_mprn_col = homebox_map.get("mprn")
     tseg_mprn_col = tseg_map.get("mprn")
 

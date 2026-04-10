@@ -9,16 +9,23 @@ Also computes cohort intelligence — grouping orders by age since they entered
 bill setup — to highlight ageing patterns across the pipeline.
 """
 
-import json
 import os
-
+import json
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from pathlib import Path
 from datetime import date
 
-from utils import detect_column, compute_days_elapsed, rag_status, ColumnNotFoundError
+from utils import (
+    detect_column,
+    compute_days_elapsed,
+    rag_status,
+    ColumnNotFoundError,
+    normalise_tseg_id,
+    normalise_tseg_series,
+)
+from tseg_api import get_contract
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -27,8 +34,9 @@ SCOPES = [
 
 CREDENTIALS_PATH = Path(__file__).parent / "credentials.json"
 
-# Tabs to skip when reading the WIP sheet — completed orders aren't relevant
-SKIP_TABS = ["completed wip"]
+# Tabs to skip when reading the WIP sheet — completed orders aren't relevant,
+# and "WIP Overview" is a summary tab that doesn't contain order rows.
+SKIP_TABS = ["completed wip", "wip overview"]
 
 # Column name patterns for the WIP Google Sheet (separate from Trevor patterns in utils.py)
 PATTERNS = {
@@ -117,8 +125,9 @@ def get_wip_data(wip_url: str) -> list[dict]:
             continue
 
         for _, row in df.iterrows():
-            tseg_val = str(row.get(tseg_col, "")).strip().upper()
-            if not tseg_val or tseg_val in ("", "NAN", "NONE"):
+            raw_tseg = row.get(tseg_col, "")
+            tseg_val = normalise_tseg_id(raw_tseg)
+            if not tseg_val:
                 continue
             all_rows.append({
                 "wip_tseg_id":        tseg_val,
@@ -135,11 +144,9 @@ def get_wip_data(wip_url: str) -> list[dict]:
 
 
 def _clean_tseg_id(val):
-    """Normalise a TSEG ID value to a clean uppercase string."""
-    try:
-        return str(int(float(str(val).strip())))
-    except (ValueError, TypeError):
-        return ""
+    """Legacy helper kept for backwards compatibility — delegates to the
+    canonical normalise_tseg_id from utils."""
+    return normalise_tseg_id(val) or ""
 
 
 def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
@@ -174,8 +181,11 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
 
     trevor = trevor_df.copy()
 
-    # Normalise TSEG IDs for join — handles float/int/string inconsistencies
-    trevor["_join_key"] = trevor[tseg_col].apply(_clean_tseg_id).str.upper()
+    # Normalise TSEG IDs for join — canonical 10-digit zero-padded form.
+    # Also overwrite the source column so the value displayed in the UI matches
+    # what gets pushed to Google Sheets.
+    trevor[tseg_col] = normalise_tseg_series(trevor[tseg_col])
+    trevor["_join_key"] = trevor[tseg_col]
     trevor["days_elapsed"] = compute_days_elapsed(trevor, updated_col)
     trevor["rag"] = trevor["days_elapsed"].apply(rag_status)
 
@@ -200,7 +210,8 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
     )
 
     if not wip_df.empty:
-        wip_df["_join_key"] = wip_df["wip_tseg_id"].astype(str).str.strip().str.upper()
+        # wip_df rows already have normalised TSEG IDs from get_wip_data
+        wip_df["_join_key"] = wip_df["wip_tseg_id"].astype(str)
 
     # Left join preserves all Trevor rows — unmatched orders get empty WIP fields
     keep = [c for c in [order_col, tseg_col, address_col, provider_col, updated_col, status_col,
@@ -210,8 +221,29 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
     ).drop(columns=["_join_key"])
     merged = merged.fillna("")
 
+    # ── TSEG API enrichment ────────────────────────────────────────────────
+    # Call the live TSEG GET /wholesale/contracts endpoint for every row.
+    # Every call sleeps 0.2s inside get_contract() so we don't hammer the API.
+    # Errors are swallowed per-row so a single failure can't crash the batch.
+    tseg_service_names  = []
+    tseg_order_statuses = []
+    tseg_service_starts = []
+    tseg_errors         = []
+    for tid in merged[tseg_col].astype(str).tolist():
+        info = get_contract(tid)
+        tseg_service_names.append(info.get("tseg_service_name", ""))
+        tseg_order_statuses.append(info.get("tseg_order_status", ""))
+        tseg_service_starts.append(info.get("tseg_service_start", ""))
+        tseg_errors.append(info.get("tseg_error", ""))
+
+    merged["tseg_service_name"]  = tseg_service_names
+    merged["tseg_order_status"]  = tseg_order_statuses
+    merged["tseg_service_start"] = tseg_service_starts
+    merged["tseg_error"]         = tseg_errors
+
     all_cols = [c for c in keep if c in merged.columns] + \
-               ["wip_tab", "wip_reason", "wip_provider", "wip_supply_status", "wip_services_start"]
+               ["wip_tab", "wip_reason", "wip_provider", "wip_supply_status", "wip_services_start",
+                "tseg_service_name", "tseg_order_status", "tseg_service_start"]
 
     result = merged[all_cols].copy()
 
@@ -315,4 +347,25 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
         "cohort_blocker_breakdown":  cohort_blocker_breakdown,
         "columns":                   out_cols,
         "rows":                      result.to_dict(orient="records"),
+        "tseg_id_col":               tseg_col,
+        "order_id_col":              order_col,
+        "address_col":               address_col or "",
+        "provider_col":              provider_col or "",
+        "updated_col":               updated_col,
+        "status_col":                status_col,
     }
+
+
+def run_wip_check_live(wip_url: str) -> dict:
+    """V2 entry point — Homebox data is read directly from the Trevor WIP sheet
+    (WIP_SHEET_URL env var) instead of from a CSV upload. The TSEG WIP sheet URL
+    is still passed in by the caller (Tom's live sheet)."""
+    homebox_url = os.environ.get("WIP_SHEET_URL", "").strip()
+    if not homebox_url:
+        raise RuntimeError("WIP_SHEET_URL env var is not set — cannot load Homebox WIP data.")
+    # Local import avoids a circular dep at module load
+    from sheets import read_sheet_as_df
+    trevor_df = read_sheet_as_df(homebox_url)
+    if trevor_df.empty:
+        raise RuntimeError("Homebox WIP Trevor sheet is empty — check the sheet URL and sharing permissions.")
+    return run_wip_check(trevor_df, wip_url)

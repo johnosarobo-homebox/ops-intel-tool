@@ -15,7 +15,7 @@ from datetime import date
 # Detection is case-insensitive and uses substring matching, so adding a pattern
 # like "payment" will match "bill_payment_reference" automatically.
 PATTERNS = {
-    "tseg_id":       ["tseg", "payment", "reference", "account", "payref", "pay_ref"],
+    "tseg_id":       ["bill_payment_reference", "payment_reference", "tseg", "payment", "reference", "account", "payref", "pay_ref"],
     "order_id":      ["order_id", "orderid", "order id", "order no", "orderno"],
     "address":       ["address", "property", "postcode", "addr"],
     "mprn":          ["mprn", "gas meter", "gas_meter", "meter point ref"],
@@ -26,6 +26,8 @@ PATTERNS = {
     "provider":      ["provider", "supplier", "bill_provider"],
     "order_started": ["order_started_bill_setups_at", "order_started", "started_bill_setups"],
     "issue":         ["issue", "lifecycle_issue", "lifecycle issue"],
+    "business_type": ["business_type", "businesstype", "business type"],
+    "gas":           ["gas_assigned", "gas assigned", "gas_supplier", "gas"],
 }
 
 
@@ -68,6 +70,32 @@ def detect_all_columns(df, source_label, fields):
         if match:
             mapping[field] = match
     return mapping
+
+
+# ── TSEG ID normalisation ────────────────────────────────────────────────────
+
+def normalise_tseg_id(raw_id):
+    """Canonical TSEG ID normalisation — apply to every TSEG ID before any join
+    or API call. Handles:
+      • float exports from Trevor (e.g. 1234567890.0)
+      • leading zero stripping by Google Sheets (e.g. 234567890 -> 0234567890)
+      • 8-digit IDs that should be 10 digits
+      • whitespace and stray characters
+    Returns a 10-character zero-padded string, or None if the input is empty/invalid.
+    """
+    try:
+        s = str(raw_id).strip()
+        if not s or s.lower() in ("nan", "none", ""):
+            return None
+        return str(int(float(s))).zfill(10)
+    except (ValueError, TypeError):
+        return None
+
+
+def normalise_tseg_series(series):
+    """Vectorised version for pandas Series — returns a Series of normalised IDs
+    with empty strings in place of None so the column can still be joined."""
+    return series.apply(lambda v: normalise_tseg_id(v) or "")
 
 
 # ── RAG / SLA helpers ────────────────────────────────────────────────────────

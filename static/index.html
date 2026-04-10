@@ -311,6 +311,118 @@
       border-radius: 8px; padding: 16px; position: relative; height: 320px;
     }
     .cohort-chart-card canvas { height: 260px !important; }
+
+    /* ── LIVE / LOAD-FROM-TREVOR BUTTON ────────────────────────── */
+    .btn-trevor {
+      background: var(--accent-bg);
+      border: 0.5px solid var(--accent-border);
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #F05A28;
+      cursor: pointer;
+      font-family: inherit;
+      display: inline-flex; align-items: center; gap: 6px;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .btn-trevor:hover { background: rgba(240,90,40,0.15); border-color: #F05A28; }
+    .btn-trevor:disabled { opacity: 0.6; cursor: default; }
+
+    .source-bar {
+      display: flex; align-items: center; gap: 12px;
+      flex-wrap: wrap;
+      padding: 12px 14px;
+      background: var(--surface);
+      border: 0.5px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+    .source-divider {
+      width: 1px; height: 22px; background: var(--border); display: inline-block;
+    }
+    .source-label {
+      font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    }
+
+    /* ── EXPANDABLE WIP ROWS ───────────────────────────────────── */
+    .wip-expand-arrow {
+      cursor: pointer;
+      user-select: none;
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 20px; height: 20px;
+      border-radius: 4px;
+      color: var(--text-muted);
+      transition: transform 0.15s, color 0.15s, background 0.15s;
+    }
+    .wip-expand-arrow:hover { background: var(--accent-bg); color: #F05A28; }
+    .wip-expand-arrow.open { transform: rotate(90deg); color: #F05A28; }
+
+    .wip-expand-row td {
+      padding: 0 !important;
+      background: var(--bg);
+      border-top: 0.5px solid var(--border);
+    }
+    .wip-zones {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 0;
+    }
+    .wip-zone {
+      padding: 14px 16px;
+      border-right: 0.5px solid var(--border);
+    }
+    .wip-zone:last-child { border-right: none; }
+    .wip-zone-header {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 6px 10px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      display: inline-block;
+      color: #fff;
+    }
+    .wip-zone-header.zone-homebox { background: #1E3A8A; }     /* navy */
+    .wip-zone-header.zone-wip     { background: #D97706; }     /* amber */
+    .wip-zone-header.zone-tseg    { background: #16A34A; }     /* green */
+    .wip-zone-row {
+      display: flex; justify-content: space-between; gap: 10px;
+      padding: 4px 0;
+      font-size: 11px;
+    }
+    .wip-zone-key {
+      color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.04em;
+      font-size: 10px; font-weight: 600;
+      flex: 0 0 auto;
+    }
+    .wip-zone-val {
+      color: var(--text);
+      font-size: 11px; text-align: right;
+      word-break: break-word;
+    }
+
+    /* TSEG order_status badges */
+    .tseg-status { padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
+    .tseg-status.active      { background: var(--pill-green-bg); color: var(--pill-green-fg); }
+    .tseg-status.objected    { background: var(--pill-red-bg);   color: var(--pill-red-fg); }
+    .tseg-status.registering { background: var(--pill-amber-bg); color: var(--pill-amber-fg); }
+    .tseg-status.notordered  { background: var(--pill-gray-bg);  color: var(--pill-gray-fg); }
+    .tseg-status.unknown     { background: var(--pill-gray-bg);  color: var(--pill-gray-fg); }
+
+    /* run button spinner */
+    .btn-run.loading { position: relative; padding-right: 36px; }
+    .btn-run.loading::after {
+      content: '';
+      position: absolute; right: 12px; top: 50%;
+      width: 12px; height: 12px;
+      margin-top: -6px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
@@ -382,6 +494,16 @@
       <div id="gas-error" class="error-box"></div>
       <div id="gas-sheet-ok" class="success-box"></div>
 
+      <div class="source-bar">
+        <span class="source-label">Live source</span>
+        <button class="btn-trevor" onclick="runGasLive()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 11-3.2-6.9"/><polyline points="21 4 21 10 15 10"/></svg>
+          Load from Trevor
+        </button>
+        <span class="source-divider"></span>
+        <span class="source-label">or manual upload below</span>
+      </div>
+
       <div class="drop-grid">
         <div id="drop-hb-gas" class="drop-zone" onclick="document.getElementById('file-hb-gas').click()">
           <div class="icon-wrap">
@@ -410,22 +532,26 @@
         <button onclick="downloadGas()" id="btn-gas-download" class="btn-outline" style="display:none;white-space:nowrap;">Download CSV</button>
       </div>
 
-      <div id="gas-local-metrics" style="display:none;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
+      <div id="gas-local-metrics" style="display:none;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px;">
         <div class="metric-card">
           <div class="metric-label">Total orders</div>
           <div class="metric-value" id="glm-total"></div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Electricity only</div>
-          <div class="metric-value red" id="glm-elec"></div>
+          <div class="metric-label">Elec only (BTR)</div>
+          <div class="metric-value" id="glm-btr" style="color:#1E3A8A;"></div>
         </div>
         <div class="metric-card">
-          <div class="metric-label">Gas confirmed</div>
-          <div class="metric-value green" id="glm-gas"></div>
+          <div class="metric-label">Gas error</div>
+          <div class="metric-value red" id="glm-error"></div>
         </div>
         <div class="metric-card">
           <div class="metric-label">Review manually</div>
           <div class="metric-value amber" id="glm-mis"></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Gas ok</div>
+          <div class="metric-value green" id="glm-gas"></div>
         </div>
       </div>
 
@@ -435,6 +561,16 @@
     <!-- ═══ SLA TAB ═══ -->
     <div id="tab-sla" class="tab-content">
       <div id="sla-error" class="error-box"></div>
+
+      <div class="source-bar">
+        <span class="source-label">Live source</span>
+        <button class="btn-trevor" onclick="runSLALive()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 11-3.2-6.9"/><polyline points="21 4 21 10 15 10"/></svg>
+          Load from Trevor
+        </button>
+        <span class="source-divider"></span>
+        <span class="source-label">or manual upload below</span>
+      </div>
 
       <div class="drop-grid" style="grid-template-columns:1fr 1fr;">
         <div id="drop-hb-sla" class="drop-zone" onclick="document.getElementById('file-hb-sla').click()">
@@ -486,6 +622,17 @@
     <!-- ═══ WIP TAB ═══ -->
     <div id="tab-wip" class="tab-content">
       <div id="wip-error" class="error-box"></div>
+
+      <div class="source-bar">
+        <span class="source-label">Live source</span>
+        <button class="btn-trevor" onclick="runWIPLive()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 11-3.2-6.9"/><polyline points="21 4 21 10 15 10"/></svg>
+          Load from Trevor + TSEG API
+        </button>
+        <input type="text" id="wip-url-live" class="text-input" placeholder="TSEG WIP Google Sheets URL" style="flex:1;min-width:280px;">
+        <span class="source-divider"></span>
+        <span class="source-label">or manual CSV upload below</span>
+      </div>
 
       <div class="drop-grid">
         <div id="drop-hb-wip" class="drop-zone" onclick="document.getElementById('file-hb-wip').click()">
@@ -562,6 +709,7 @@
     let wipSortCol = 'days_elapsed', wipSortAsc = false
     let wipCohortFilter = 'all'
     let wipCohortPieChart = null, wipCohortBarChart = null
+    let wipExpandedKey = null
 
     // SLA module state
     let slaSortCol = 'days_elapsed', slaSortAsc = false, slaAllRows = [], slaCols = [], slaSearchQuery = ''
@@ -651,13 +799,20 @@
     // ── HELPERS ────────────────────────────────────────────────────
     function setBtn(loading) {
       const b = document.getElementById('btn-run')
-      b.disabled = loading; b.textContent = loading ? 'Running...' : 'Run analysis'
+      b.disabled = loading
+      b.textContent = loading ? 'Running...' : 'Run analysis'
+      b.classList.toggle('loading', loading)
+      // Disable Trevor buttons too so users don't double-click
+      document.querySelectorAll('.btn-trevor').forEach(t => t.disabled = loading)
     }
     function showError(id, msg) { const el = document.getElementById(id); el.textContent = msg; el.style.display = 'block' }
     function hideError(id) { document.getElementById(id).style.display = 'none' }
     function updateLastRun() {
       const now = new Date()
-      document.getElementById('last-run').textContent = 'Last run: ' + now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0')
+      const hh = now.getHours().toString().padStart(2, '0')
+      const mm = now.getMinutes().toString().padStart(2, '0')
+      const ss = now.getSeconds().toString().padStart(2, '0')
+      document.getElementById('last-run').textContent = 'Last refreshed: ' + hh + ':' + mm + ':' + ss
     }
 
     // ── GAS CHECKER ───────────────────────────────────────────────
@@ -683,10 +838,18 @@
       gasTotal = data.summary.total
       updateGlobalMetrics()
 
-      document.getElementById('glm-total').textContent = data.summary.total
-      document.getElementById('glm-elec').textContent = data.summary.elec_only
-      document.getElementById('glm-gas').textContent = data.summary.gas_ok
-      document.getElementById('glm-mis').textContent = data.summary.mismatch
+      // Support both V2 (4-flag) and legacy (3-flag) summary shapes
+      const s = data.summary
+      const elecBtr  = (s.elec_btr  != null) ? s.elec_btr  : 0
+      const gasError = (s.gas_error != null) ? s.gas_error : (s.elec_only || 0)
+      const review   = (s.review    != null) ? s.review    : (s.mismatch  || 0)
+      const gasOk    = (s.gas_ok    != null) ? s.gas_ok    : 0
+
+      document.getElementById('glm-total').textContent = s.total
+      document.getElementById('glm-btr').textContent   = elecBtr
+      document.getElementById('glm-error').textContent = gasError
+      document.getElementById('glm-mis').textContent   = review
+      document.getElementById('glm-gas').textContent   = gasOk
       document.getElementById('gas-local-metrics').style.display = 'grid'
       document.getElementById('btn-gas-download').style.display = 'inline-block'
 
@@ -696,10 +859,15 @@
         el.style.display = 'block'
       }
 
+      // V2 four-flag pill map (with legacy fallbacks)
       const FP = {
-        'electricity only - action required': '<span class="pill pill-orange">Elec only</span>',
-        'gas confirmed - ok': '<span class="pill pill-green">Gas ok</span>',
-        'mprn mismatch - review manually': '<span class="pill pill-amber">Review</span>',
+        'Elec only (BTR)':                     '<span class="pill" style="background:#1E3A8A;color:#fff;">Elec only (BTR)</span>',
+        'Gas error':                           '<span class="pill pill-red">Gas error</span>',
+        'Review manually':                     '<span class="pill pill-amber">Review manually</span>',
+        'Gas ok':                              '<span class="pill pill-green">Gas ok</span>',
+        'electricity only - action required':  '<span class="pill pill-orange">Elec only</span>',
+        'gas confirmed - ok':                  '<span class="pill pill-green">Gas ok</span>',
+        'mprn mismatch - review manually':     '<span class="pill pill-amber">Review</span>',
       }
       const wrap = document.getElementById('gas-table-wrap')
       wrap.innerHTML = buildTable(data.columns, data.rows, (row, col) => {
@@ -707,6 +875,58 @@
         return row[col] ?? ''
       })
       wrap.style.display = 'block'; wrap.classList.add('fade-in')
+    }
+
+    // ── LIVE TREVOR RUNNERS ───────────────────────────────────────
+    async function runGasLive() {
+      hideError('gas-error'); setBtn(true)
+      try {
+        const fd = new FormData()
+        fd.append('sheet_url', document.getElementById('gas-sheet-url').value)
+        const res = await fetch('/run-gas-live', { method: 'POST', body: fd })
+        if (!res.ok) {
+          const err = await res.json().catch(() => null)
+          showError('gas-error', (err && (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail))) || 'Server error (' + res.status + ')'); return
+        }
+        const data = await res.json()
+        renderGas(data); updateLastRun()
+      } catch (e) { showError('gas-error', e.message === 'Failed to fetch' ? 'Could not connect. Is app.py running?' : e.message) }
+      finally { setBtn(false) }
+    }
+
+    async function runSLALive() {
+      hideError('sla-error'); setBtn(true)
+      try {
+        const fd = new FormData()
+        fd.append('sheet_url', document.getElementById('sla-sheet-url').value)
+        const res = await fetch('/run-sla-live', { method: 'POST', body: fd })
+        if (!res.ok) {
+          const err = await res.json().catch(() => null)
+          showError('sla-error', (err && (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail))) || 'Server error (' + res.status + ')'); return
+        }
+        const data = await res.json()
+        renderSLA(data); updateLastRun()
+      } catch (e) { showError('sla-error', 'Could not connect.') }
+      finally { setBtn(false) }
+    }
+
+    async function runWIPLive() {
+      const wipUrl = (document.getElementById('wip-url-live').value || '').trim()
+      if (!wipUrl) { showError('wip-error', 'Paste the TSEG WIP Google Sheets URL.'); return }
+      hideError('wip-error'); setBtn(true)
+      try {
+        const fd = new FormData()
+        fd.append('wip_url', wipUrl)
+        fd.append('sheet_url', document.getElementById('wip-sheet-url').value)
+        const res = await fetch('/run-wip-live', { method: 'POST', body: fd })
+        if (!res.ok) {
+          const err = await res.json().catch(() => null)
+          showError('wip-error', (err && (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail))) || 'Server error (' + res.status + ')'); return
+        }
+        const data = await res.json()
+        renderWIP(data); updateLastRun()
+      } catch (e) { showError('wip-error', e.message === 'Failed to fetch' ? 'Could not connect.' : e.message) }
+      finally { setBtn(false) }
     }
 
     async function downloadGas() {
@@ -890,6 +1110,7 @@
       wipAllRows = data.rows; wipCols = data.columns
       wipActiveFilter = 'all'; wipSearchQuery = ''
       wipSortCol = 'days_elapsed'; wipSortAsc = false
+      wipExpandedKey = null
       document.getElementById('wip-search').value = ''
 
       const notOnWipCount = data.rows.filter(r => !r.wip_tab).length
@@ -1163,24 +1384,165 @@
       applyWIPFilters()
     }
 
+    // ── WIP TABLE — V2 EXPANDABLE LAYOUT ──────────────────────────
+    // Default view shows only the high-signal columns. Each row has an expand
+    // arrow that reveals three zones (Homebox / WIP sheet / TSEG API live).
+    // Only one row can be expanded at a time. Zone rendering uses metadata
+    // returned by the backend (tseg_id_col, order_id_col, ...) so the layout
+    // works regardless of the actual Trevor column names.
+
+    // Heuristic detection of which columns hold the high-signal default fields.
+    function _wipDetectCols(rows) {
+      const sample = rows.find(r => r) || {}
+      const find = (...patterns) => {
+        for (const p of patterns) {
+          for (const k of Object.keys(sample)) {
+            if (k.toLowerCase().includes(p)) return k
+          }
+        }
+        return null
+      }
+      return {
+        order:    find('order_id', 'orderid', 'order'),
+        property: find('property', 'address'),
+        provider: find('bill_provider', 'provider', 'supplier'),
+        days:     'days_elapsed',
+        rag:      'rag',
+        wipTab:   'wip_tab',
+        tseg:     find('bill_payment_reference', 'payment_reference', 'tseg'),
+        billState: find('bill_state'),
+        billStateUpdated: find('bill_state_updated', 'state_updated', 'updated_at'),
+        cohort: 'cohort',
+      }
+    }
+
+    function _ragCell(row) {
+      const cls = { breached: 'pill-red', at_risk: 'pill-amber', ok: 'pill-green' }[row.rag] || ''
+      const label = { breached: 'Breached', at_risk: 'At risk', ok: 'Within SLA' }[row.rag] || row.rag || ''
+      return '<span class="pill ' + cls + '">' + label + '</span>'
+    }
+    function _daysCell(row) {
+      const c = row.rag === 'breached' ? 'var(--red)' : row.rag === 'at_risk' ? 'var(--amber)' : 'var(--green)'
+      return '<span style="font-size:18px;font-weight:700;color:' + c + ';">' + (row.days_elapsed || 0) + '</span><span style="font-size:11px;color:var(--text-muted);margin-left:2px;">d</span>'
+    }
+    function _wipTabCell(val) {
+      if (!val) return '<span style="color:var(--text-muted);font-size:11px;">Not on WIP</span>'
+      return '<span class="pill ' + tabPill(val) + '">' + tabDisplay(val) + '</span>'
+    }
+    function _tsegStatusBadge(status) {
+      if (!status) return ''
+      const upper = String(status).toUpperCase().trim()
+      let cls = 'unknown'
+      if (upper === 'ACTIVE') cls = 'active'
+      else if (upper === 'OBJECTED') cls = 'objected'
+      else if (upper === 'REGISTERING') cls = 'registering'
+      else if (upper === 'NOT ORDERED' || upper === 'NOT_ORDERED' || upper === 'NOT FOUND') cls = 'notordered'
+      return '<span class="tseg-status ' + cls + '">' + upper + '</span>'
+    }
+
+    function _zoneRow(key, val) {
+      const display = (val == null || val === '') ? '<span style="color:var(--text-muted);">—</span>' : val
+      return '<div class="wip-zone-row"><span class="wip-zone-key">' + key + '</span><span class="wip-zone-val">' + display + '</span></div>'
+    }
+
+    function _renderExpandedZones(row, cm) {
+      const tsegVal       = cm.tseg ? row[cm.tseg] : ''
+      const billState     = cm.billState ? row[cm.billState] : ''
+      const billStateUpd  = cm.billStateUpdated ? row[cm.billStateUpdated] : ''
+      const cohort        = row.cohort || ''
+      const wipTabVal     = row.wip_tab || ''
+      const wipReason     = row.wip_reason || ''
+      const wipProvider   = row.wip_provider || ''
+      const wipSupply     = row.wip_supply_status || ''
+      const wipStart      = row.wip_services_start || ''
+      const tsegName      = row.tseg_service_name || ''
+      const tsegStatus    = row.tseg_order_status || ''
+      const tsegStart     = row.tseg_service_start || ''
+
+      let html = '<div class="wip-zones">'
+      // Zone 1 — Homebox
+      html += '<div class="wip-zone">'
+      html += '<div class="wip-zone-header zone-homebox">Homebox</div>'
+      html += _zoneRow('TSEG ID', tsegVal)
+      html += _zoneRow('Bill state', billState)
+      html += _zoneRow('Bill state updated', formatDate(billStateUpd) || billStateUpd)
+      html += _zoneRow('Cohort', cohort)
+      html += '</div>'
+
+      // Zone 2 — TSEG WIP Sheet
+      html += '<div class="wip-zone">'
+      html += '<div class="wip-zone-header zone-wip">TSEG WIP sheet</div>'
+      html += _zoneRow('WIP tab', wipTabVal ? tabDisplay(wipTabVal) : '')
+      html += _zoneRow('Reason', wipReason)
+      html += _zoneRow('Provider', wipProvider)
+      html += _zoneRow('Supply status', wipSupply)
+      html += _zoneRow('Services start', formatDate(wipStart) || wipStart)
+      html += '</div>'
+
+      // Zone 3 — TSEG API live
+      html += '<div class="wip-zone">'
+      html += '<div class="wip-zone-header zone-tseg">TSEG API live</div>'
+      html += _zoneRow('Service name', tsegName)
+      html += _zoneRow('Order status', _tsegStatusBadge(tsegStatus))
+      html += _zoneRow('Service start', formatDate(tsegStart) || tsegStart)
+      html += '</div>'
+
+      html += '</div>'
+      return html
+    }
+
+    function toggleWIPRow(key) {
+      wipExpandedKey = (wipExpandedKey === key) ? null : key
+      applyWIPFilters()
+    }
+
     function renderWIPTable(rows) {
       const wrap = document.getElementById('wip-table-wrap')
+      const cm = _wipDetectCols(rows)
       const hlFn = wipActiveFilter === 'all' ? (row => !row.wip_tab) : null
-      wrap.innerHTML = buildSortableTable(wipCols, rows, 'sortWIP', wipSortCol, wipSortAsc, (row, col) => {
-        if (col === 'rag') {
-          const cls = { breached: 'pill-red', at_risk: 'pill-amber', ok: 'pill-green' }[row[col]] || ''
-          const label = { breached: 'Breached', at_risk: 'At risk', ok: 'Within SLA' }[row[col]] || row[col] || ''
-          return '<span class="pill ' + cls + '">' + label + '</span>'
+
+      // Header columns shown by default
+      const headers = ['', 'ORDER ID', 'PROPERTY', 'BILL PROVIDER', 'DAYS ELAPSED', 'RAG', 'WIP TAB']
+      const sortableMap = { 'ORDER ID': cm.order, 'PROPERTY': cm.property, 'BILL PROVIDER': cm.provider, 'DAYS ELAPSED': 'days_elapsed', 'RAG': 'rag', 'WIP TAB': 'wip_tab' }
+
+      let html = '<div class="table-wrap"><div class="table-scroll"><table><thead><tr>'
+      headers.forEach(h => {
+        if (h === '') { html += '<th style="width:24px;"></th>' }
+        else {
+          const sortKey = sortableMap[h]
+          if (sortKey) {
+            html += '<th style="cursor:pointer;user-select:none;" onclick="sortWIP(\'' + sortKey + '\')">' + h + sortArrow(sortKey, wipSortCol, wipSortAsc) + '</th>'
+          } else {
+            html += '<th>' + h + '</th>'
+          }
         }
-        if (col === 'days_elapsed') {
-          const c = row['rag'] === 'breached' ? 'var(--red)' : row['rag'] === 'at_risk' ? 'var(--amber)' : 'var(--green)'
-          return '<span style="font-size:18px;font-weight:700;color:' + c + ';">' + row[col] + '</span><span style="font-size:11px;color:var(--text-muted);margin-left:2px;">d</span>'
+      })
+      html += '</tr></thead><tbody>'
+
+      if (rows.length === 0) {
+        html += '<tr><td colspan="' + headers.length + '" style="text-align:center;padding:24px;color:var(--text-muted);">No matching orders</td></tr>'
+      }
+
+      rows.forEach((row, idx) => {
+        const key = (cm.order ? row[cm.order] : '') + '|' + idx
+        const isOpen = wipExpandedKey === key
+        const hl = hlFn && hlFn(row) ? ' class="row-highlight"' : ''
+        html += '<tr' + hl + '>'
+        html += '<td><span class="wip-expand-arrow' + (isOpen ? ' open' : '') + '" onclick="toggleWIPRow(\'' + key.replace(/\\/g, '').replace(/'/g, "\\'") + '\')">&#9656;</span></td>'
+        html += '<td>' + (cm.order ? (row[cm.order] || '') : '') + '</td>'
+        html += '<td>' + (cm.property ? (row[cm.property] || '') : '') + '</td>'
+        html += '<td>' + (cm.provider ? (row[cm.provider] || '') : '') + '</td>'
+        html += '<td>' + _daysCell(row) + '</td>'
+        html += '<td>' + _ragCell(row) + '</td>'
+        html += '<td>' + _wipTabCell(row.wip_tab) + '</td>'
+        html += '</tr>'
+        if (isOpen) {
+          html += '<tr class="wip-expand-row"><td colspan="' + headers.length + '">' + _renderExpandedZones(row, cm) + '</td></tr>'
         }
-        if (col === 'wip_tab' && row[col]) return '<span class="pill ' + tabPill(row[col]) + '">' + tabDisplay(row[col]) + '</span>'
-        if (col === 'wip_supply_status') return supplyStatusPill(row[col])
-        if (col === 'wip_services_start') return formatDate(row[col])
-        return row[col] ?? ''
-      }, hlFn)
+      })
+
+      html += '</tbody></table></div></div>'
+      wrap.innerHTML = html
       wrap.style.display = 'block'; wrap.classList.add('fade-in')
     }
 

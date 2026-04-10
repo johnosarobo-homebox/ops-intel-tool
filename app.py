@@ -1,15 +1,17 @@
 """
 FastAPI server for Homebox Ops Intel.
 
-Serves the single-page frontend and exposes three POST endpoints:
-  /run-gas  — Gas fuel error detection
-  /run-sla  — SLA breach monitoring
-  /run-wip  — WIP cross-reference with cohort intelligence
+Serves the single-page frontend and exposes the analysis endpoints:
+  CSV-upload (legacy, kept as manual fallback):
+    /run-gas, /run-sla, /run-wip
+  Live (V2 — reads from Trevor Google Sheets directly):
+    /run-gas-live, /run-sla-live, /run-wip-live
 
 All processing is in-memory per request — no data is persisted server-side.
 """
 
 import io
+import os
 import pandas as pd
 import uvicorn
 import webbrowser
@@ -22,10 +24,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import date
 from pathlib import Path
 
-from gas_checker import flag_order
-from sheets import push_to_sheets
+from gas_checker import flag_order, run_gas_check_v2
+from sheets import push_to_sheets, read_sheet_as_df
 from sla_checker import run_sla_check
-from wip_checker import run_wip_check
+from wip_checker import run_wip_check, run_wip_check_live
 from utils import detect_all_columns, ColumnNotFoundError, clean_nan_in_rows
 
 BASE_DIR = Path(__file__).parent
@@ -189,6 +191,97 @@ async def run_wip(
 
     clean_nan_in_rows(result["rows"])
 
+    return result
+
+
+# ── V2 LIVE ENDPOINTS ────────────────────────────────────────────────────────
+# These read directly from the Trevor Google Sheets (URLs are in env vars).
+# CSV-upload endpoints above are preserved as manual fallbacks.
+
+def _require_env(name: str) -> str:
+    val = os.environ.get(name, "").strip()
+    if not val:
+        raise HTTPException(500, f"Environment variable {name} is not configured.")
+    return val
+
+
+@app.post("/run-gas-live")
+async def run_gas_live(sheet_url: str = Form(default="")):
+    url = _require_env("GAS_SHEET_URL")
+    try:
+        df = read_sheet_as_df(url)
+    except Exception as e:
+        raise HTTPException(502, f"Could not read Gas Trevor sheet: {e}")
+    if df.empty:
+        raise HTTPException(400, "Gas Trevor sheet returned no rows.")
+    try:
+        result = run_gas_check_v2(df)
+    except ColumnNotFoundError as e:
+        raise HTTPException(400, str(e))
+
+    if sheet_url.strip() and result["rows"]:
+        try:
+            out_df = pd.DataFrame(result["rows"])[result["columns"]]
+            result["sheet_tab"] = push_to_sheets(out_df, sheet_url.strip())
+        except Exception as e:
+            result["sheet_error"] = str(e)
+
+    clean_nan_in_rows(result["rows"])
+    return result
+
+
+@app.post("/run-sla-live")
+async def run_sla_live(sheet_url: str = Form(default="")):
+    url = _require_env("SLA_SHEET_URL")
+    try:
+        df = read_sheet_as_df(url)
+    except Exception as e:
+        raise HTTPException(502, f"Could not read SLA Trevor sheet: {e}")
+    if df.empty:
+        raise HTTPException(400, "SLA Trevor sheet returned no rows.")
+    try:
+        result = run_sla_check(df)
+    except ColumnNotFoundError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+    if sheet_url.strip() and result["rows"]:
+        try:
+            out_df = pd.DataFrame(result["rows"])[result["columns"]]
+            result["sheet_tab"] = push_to_sheets(out_df, sheet_url.strip())
+        except Exception as e:
+            result["sheet_error"] = str(e)
+
+    clean_nan_in_rows(result["rows"])
+    return result
+
+
+@app.post("/run-wip-live")
+async def run_wip_live(
+    wip_url:   str = Form(...),
+    sheet_url: str = Form(default=""),
+):
+    """V2 WIP cross-reference. Homebox WIP data is read from WIP_SHEET_URL env var.
+    The TSEG WIP sheet URL still comes from the user (Tom's live sheet).
+    Each matched order is enriched with a live TSEG API call."""
+    try:
+        result = run_wip_check_live(wip_url)
+    except ColumnNotFoundError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+    if sheet_url.strip() and result["rows"]:
+        try:
+            out_df    = pd.DataFrame(result["rows"])
+            result["sheet_tab"] = push_to_sheets(out_df, sheet_url.strip())
+        except Exception as e:
+            result["sheet_error"] = str(e)
+
+    clean_nan_in_rows(result["rows"])
     return result
 
 

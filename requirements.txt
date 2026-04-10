@@ -4,3 +4,4 @@ pandas>=2.2,<3.0
 gspread>=6.0,<7.0
 google-auth>=2.29,<3.0
 python-multipart>=0.0.9
+requests>=2.31,<3.0
