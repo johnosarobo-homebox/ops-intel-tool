@@ -416,7 +416,7 @@
     .tseg-status.active      { background: var(--pill-green-bg); color: var(--pill-green-fg); }
     .tseg-status.objected    { background: var(--pill-red-bg);   color: var(--pill-red-fg); }
     .tseg-status.registering { background: var(--pill-amber-bg); color: var(--pill-amber-fg); }
-    .tseg-status.notordered  { background: var(--pill-gray-bg);  color: var(--pill-gray-fg); }
+    .tseg-status.notordered  { background: var(--pill-purple-bg); color: var(--pill-purple-fg); }
     .tseg-status.unknown     { background: var(--pill-gray-bg);  color: var(--pill-gray-fg); }
 
     /* run button spinner */
@@ -1405,10 +1405,20 @@
     // Heuristic detection of which columns hold the high-signal default fields.
     function _wipDetectCols(rows) {
       const sample = rows.find(r => r) || {}
+      const keys = Object.keys(sample)
       const find = (...patterns) => {
         for (const p of patterns) {
-          for (const k of Object.keys(sample)) {
+          for (const k of keys) {
             if (k.toLowerCase().includes(p)) return k
+          }
+        }
+        return null
+      }
+      // Exact-match variant — avoids bill_state picking up bill_state_updated_at
+      const findExact = (...patterns) => {
+        for (const p of patterns) {
+          for (const k of keys) {
+            if (k.toLowerCase() === p) return k
           }
         }
         return null
@@ -1421,7 +1431,7 @@
         rag:      'rag',
         wipTab:   'wip_tab',
         tseg:     find('bill_payment_reference', 'payment_reference', 'tseg'),
-        billState: find('bill_state'),
+        billState: findExact('bill_state') || find('bill_state'),
         billStateUpdated: find('bill_state_updated', 'state_updated', 'updated_at'),
         cohort: 'cohort',
       }
@@ -1524,11 +1534,11 @@
       const hlFn = wipActiveFilter === 'all' ? (row => !row.wip_tab) : null
 
       // Header columns shown by default
-      const headers = ['', 'ORDER ID', 'TSEG ID', 'PROPERTY', 'FUEL', 'BILL PROVIDER', 'BILL STATE', 'DAYS ELAPSED', 'RAG', 'WIP TAB']
+      const headers = ['', 'ORDER ID', 'TSEG ID', 'PROPERTY', 'FUEL', 'BILL PROVIDER', 'BILL STATE', 'DAYS ELAPSED', 'RAG', 'API STATUS', 'WIP TAB']
       const sortableMap = {
         'ORDER ID': cm.order, 'TSEG ID': cm.tseg, 'PROPERTY': cm.property,
         'FUEL': 'fuel', 'BILL PROVIDER': cm.provider, 'BILL STATE': cm.billState,
-        'DAYS ELAPSED': 'days_elapsed', 'RAG': 'rag', 'WIP TAB': 'wip_tab'
+        'DAYS ELAPSED': 'days_elapsed', 'RAG': 'rag', 'API STATUS': 'tseg_order_status', 'WIP TAB': 'wip_tab'
       }
 
       let html = '<div class="table-wrap"><div class="table-scroll"><table><thead><tr>'
@@ -1563,6 +1573,7 @@
         html += '<td>' + (cm.billState ? (row[cm.billState] || '') : '') + '</td>'
         html += '<td>' + _daysCell(row) + '</td>'
         html += '<td>' + _ragCell(row) + '</td>'
+        html += '<td>' + (row.tseg_order_status ? _tsegStatusBadge(row.tseg_order_status) : '<span style="color:var(--text-muted);">—</span>') + '</td>'
         html += '<td>' + _wipTabCell(row.wip_tab) + '</td>'
         html += '</tr>'
         if (isOpen) {

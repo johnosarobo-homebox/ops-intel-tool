@@ -232,25 +232,34 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
     ).drop(columns=["_join_key"])
     merged = merged.fillna("")
 
-    # ── TSEG API enrichment ────────────────────────────────────────────────
-    # Call the live TSEG GET /wholesale/contracts endpoint for every row.
-    # Every call sleeps 0.2s inside get_contract() so we don't hammer the API.
-    # Errors are swallowed per-row so a single failure can't crash the batch.
-    tseg_service_names  = []
-    tseg_order_statuses = []
-    tseg_service_starts = []
-    tseg_errors         = []
-    for tid in merged[tseg_col].astype(str).tolist():
-        info = get_contract(tid)
-        tseg_service_names.append(info.get("tseg_service_name", ""))
-        tseg_order_statuses.append(info.get("tseg_order_status", ""))
-        tseg_service_starts.append(info.get("tseg_service_start", ""))
-        tseg_errors.append(info.get("tseg_error", ""))
+    # ── TSEG API enrichment (concurrent) ──────────────────────────────────
+    # Fire up to 20 threads in parallel.  Each thread calls get_contract()
+    # which sleeps 0.2s per call to stay within the 300 req/min rate limit.
+    # Per-row errors are swallowed so one bad ID can't crash the batch.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    merged["tseg_service_name"]  = tseg_service_names
-    merged["tseg_order_status"]  = tseg_order_statuses
-    merged["tseg_service_start"] = tseg_service_starts
-    merged["tseg_error"]         = tseg_errors
+    tseg_ids = merged[tseg_col].astype(str).tolist()
+    api_results = [None] * len(tseg_ids)
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_idx = {
+            executor.submit(get_contract, tid): i
+            for i, tid in enumerate(tseg_ids)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                api_results[idx] = future.result()
+            except Exception:
+                api_results[idx] = {
+                    "tseg_service_name": "", "tseg_order_status": "Not found",
+                    "tseg_service_start": "", "tseg_error": "Worker failed",
+                }
+
+    merged["tseg_service_name"]  = [r.get("tseg_service_name", "")  for r in api_results]
+    merged["tseg_order_status"]  = [r.get("tseg_order_status", "")  for r in api_results]
+    merged["tseg_service_start"] = [r.get("tseg_service_start", "") for r in api_results]
+    merged["tseg_error"]         = [r.get("tseg_error", "")         for r in api_results]
 
     all_cols = [c for c in keep if c in merged.columns] + \
                ["wip_tab", "wip_reason", "wip_provider", "wip_supply_status", "wip_services_start",
