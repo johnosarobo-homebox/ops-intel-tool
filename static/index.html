@@ -426,6 +426,64 @@
     .tseg-status.notordered  { background: var(--pill-purple-bg); color: var(--pill-purple-fg); }
     .tseg-status.unknown     { background: var(--pill-gray-bg);  color: var(--pill-gray-fg); }
 
+    /* ── LIVE-RUN PROGRESS PANEL ──────────────────────────────── */
+    /* Shown below the "Load from Trevor" button on SLA and WIP tabs
+       while a live run is in progress. Slides in from the top and out
+       smoothly on completion. */
+    .progress-panel {
+      border: 0.5px solid var(--border);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      transition: max-height 0.25s ease, opacity 0.25s ease,
+                  padding 0.25s ease, margin-bottom 0.25s ease;
+      padding-top: 0; padding-bottom: 0; margin-bottom: 0;
+    }
+    .progress-panel.visible {
+      max-height: 160px;
+      opacity: 1;
+      padding-top: 14px;
+      padding-bottom: 14px;
+      margin-bottom: 12px;
+    }
+    .progress-stage {
+      font-size: 12px; font-weight: 600; color: var(--text);
+      margin-bottom: 8px;
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 12px;
+    }
+    .progress-stage.done  { color: var(--green); }
+    .progress-stage.error { color: var(--red); }
+    .progress-stage-text { flex: 1 1 auto; }
+    .progress-percent {
+      font-size: 12px; font-weight: 700; color: #F05A28;
+      font-variant-numeric: tabular-nums;
+    }
+    .progress-bar-track {
+      height: 8px;
+      background: var(--bar-track);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: #F05A28;
+      width: 0%;
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+    .progress-panel.done .progress-bar-fill  { background: var(--green); }
+    .progress-panel.error .progress-bar-fill { background: var(--red); }
+    .progress-elapsed {
+      font-size: 11px; color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
     /* run button spinner */
     .btn-run.loading { position: relative; padding-right: 36px; }
     .btn-run.loading::after {
@@ -588,6 +646,15 @@
         <span class="source-label">or manual upload below</span>
       </div>
 
+      <div id="sla-progress" class="progress-panel">
+        <div class="progress-stage">
+          <span class="progress-stage-text" id="sla-progress-stage">Starting...</span>
+          <span class="progress-percent" id="sla-progress-pct">0%</span>
+        </div>
+        <div class="progress-bar-track"><div class="progress-bar-fill" id="sla-progress-fill"></div></div>
+        <div class="progress-elapsed" id="sla-progress-elapsed">Elapsed: 0m 0s</div>
+      </div>
+
       <div class="drop-grid" style="grid-template-columns:1fr 1fr;">
         <div id="drop-hb-sla" class="drop-zone" onclick="document.getElementById('file-hb-sla').click()">
           <div class="icon-wrap">
@@ -656,6 +723,15 @@
         <input type="text" id="wip-url-live" class="text-input" placeholder="TSEG WIP Google Sheets URL" style="flex:1;min-width:280px;">
         <span class="source-divider"></span>
         <span class="source-label">or manual CSV upload below</span>
+      </div>
+
+      <div id="wip-progress" class="progress-panel">
+        <div class="progress-stage">
+          <span class="progress-stage-text" id="wip-progress-stage">Starting...</span>
+          <span class="progress-percent" id="wip-progress-pct">0%</span>
+        </div>
+        <div class="progress-bar-track"><div class="progress-bar-fill" id="wip-progress-fill"></div></div>
+        <div class="progress-elapsed" id="wip-progress-elapsed">Elapsed: 0m 0s</div>
       </div>
 
       <div class="drop-grid">
@@ -832,6 +908,132 @@
       // Disable Trevor buttons too so users don't double-click
       document.querySelectorAll('.btn-trevor').forEach(t => t.disabled = loading)
     }
+
+    // ── LIVE-RUN BUTTON LOCK ──────────────────────────────────────
+    // Prevents concurrent runs across tabs. Disables every live / CSV run
+    // trigger when any live run is in progress, re-enables on completion.
+    let isLiveRunActive = false
+    function setLiveRunActive(active) {
+      isLiveRunActive = active
+      const runBtn = document.getElementById('btn-run')
+      runBtn.disabled = active
+      runBtn.classList.toggle('loading', active)
+      if (!active) runBtn.textContent = 'Run analysis'
+      document.querySelectorAll('.btn-trevor').forEach(t => t.disabled = active)
+    }
+
+    // ── PROGRESS DRIVER ───────────────────────────────────────────
+    // Shared between the SLA and WIP live runs. Opens an EventSource against
+    // /progress/{job_id}, ticks a 1s elapsed timer, updates the DOM, and
+    // handles the done/error slide-out transitions.
+    function newJobId() {
+      if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID()
+      // RFC4122-ish fallback for older browsers
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
+      })
+    }
+
+    function _formatElapsed(ms) {
+      const total = Math.floor(ms / 1000)
+      const m = Math.floor(total / 60)
+      const s = total % 60
+      return `Elapsed: ${m}m ${s}s`
+    }
+
+    function progressController(tabKey) {
+      // tabKey is either 'sla' or 'wip'. Returns a controller with open/close.
+      const panel   = document.getElementById(tabKey + '-progress')
+      const stageEl = document.getElementById(tabKey + '-progress-stage')
+      const pctEl   = document.getElementById(tabKey + '-progress-pct')
+      const fillEl  = document.getElementById(tabKey + '-progress-fill')
+      const timeEl  = document.getElementById(tabKey + '-progress-elapsed')
+
+      let eventSource = null
+      let timerId = null
+      let startedAt = 0
+
+      function show(initialStage) {
+        panel.classList.remove('done', 'error')
+        stageEl.classList.remove('done', 'error')
+        stageEl.textContent = initialStage || 'Starting...'
+        pctEl.textContent = '0%'
+        fillEl.style.width = '0%'
+        timeEl.textContent = 'Elapsed: 0m 0s'
+        panel.classList.add('visible')
+        startedAt = Date.now()
+        timerId = setInterval(() => {
+          timeEl.textContent = _formatElapsed(Date.now() - startedAt)
+        }, 1000)
+      }
+
+      function applyState(state) {
+        stageEl.textContent = state.stage || '...'
+        const total = Number(state.total) || 0
+        const current = Number(state.current) || 0
+        const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0
+        pctEl.textContent = pct + '%'
+        fillEl.style.width = pct + '%'
+      }
+
+      function openStream(jobId) {
+        try {
+          eventSource = new EventSource('/progress/' + encodeURIComponent(jobId))
+        } catch (e) {
+          // EventSource construction errors are rare — fall back silently
+          eventSource = null
+          return
+        }
+        eventSource.onmessage = ev => {
+          try {
+            const state = JSON.parse(ev.data)
+            applyState(state)
+            if (state.done) closeStream()
+          } catch (e) { /* ignore malformed payloads */ }
+        }
+        eventSource.onerror = () => {
+          // Connection dropped — close and let the POST outcome drive final UI
+          closeStream()
+        }
+      }
+
+      function closeStream() {
+        if (eventSource) { try { eventSource.close() } catch (e) {} eventSource = null }
+      }
+
+      function stopTimer() {
+        if (timerId) { clearInterval(timerId); timerId = null }
+      }
+
+      function done(msg) {
+        closeStream(); stopTimer()
+        panel.classList.add('done')
+        stageEl.classList.add('done')
+        stageEl.textContent = msg
+        pctEl.textContent = '100%'
+        fillEl.style.width = '100%'
+        // Keep the success state visible for 3s then slide out.
+        setTimeout(() => {
+          panel.classList.remove('visible', 'done')
+          stageEl.classList.remove('done')
+        }, 3000)
+      }
+
+      function fail(msg) {
+        closeStream(); stopTimer()
+        panel.classList.add('error')
+        stageEl.classList.add('error')
+        stageEl.textContent = msg || 'Something went wrong — try again'
+        // Error state hides after 4s so it doesn't linger.
+        setTimeout(() => {
+          panel.classList.remove('visible', 'error')
+          stageEl.classList.remove('error')
+        }, 4000)
+      }
+
+      return { show, openStream, done, fail }
+    }
     function showError(id, msg) { const el = document.getElementById(id); el.textContent = msg; el.style.display = 'block' }
     function hideError(id) { document.getElementById(id).style.display = 'none' }
     function updateLastRun() {
@@ -923,38 +1125,66 @@
     }
 
     async function runSLALive() {
-      hideError('sla-error'); setBtn(true)
+      if (isLiveRunActive) return
+      hideError('sla-error'); setLiveRunActive(true)
+      const jobId = newJobId()
+      const pc = progressController('sla')
+      pc.show('Loading Trevor data...')
+      pc.openStream(jobId)
       try {
         const fd = new FormData()
         fd.append('sheet_url', document.getElementById('sla-sheet-url').value)
+        fd.append('job_id', jobId)
         const res = await fetch('/run-sla-live', { method: 'POST', body: fd })
         if (!res.ok) {
           const err = await res.json().catch(() => null)
-          showError('sla-error', (err && (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail))) || 'Server error (' + res.status + ')'); return
+          const detail = (err && (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail))) || 'Server error (' + res.status + ')'
+          showError('sla-error', detail)
+          pc.fail()
+          return
         }
         const data = await res.json()
         renderSLA(data); updateLastRun()
-      } catch (e) { showError('sla-error', 'Could not connect.') }
-      finally { setBtn(false) }
+        pc.done('Done — ' + (data.rows ? data.rows.length : 0) + ' orders loaded')
+      } catch (e) {
+        showError('sla-error', e.message === 'Failed to fetch' ? 'Could not connect.' : e.message)
+        pc.fail()
+      } finally {
+        setLiveRunActive(false)
+      }
     }
 
     async function runWIPLive() {
+      if (isLiveRunActive) return
       const wipUrl = (document.getElementById('wip-url-live').value || '').trim()
       if (!wipUrl) { showError('wip-error', 'Paste the TSEG WIP Google Sheets URL.'); return }
-      hideError('wip-error'); setBtn(true)
+      hideError('wip-error'); setLiveRunActive(true)
+      const jobId = newJobId()
+      const pc = progressController('wip')
+      pc.show('Loading Trevor data...')
+      pc.openStream(jobId)
       try {
         const fd = new FormData()
         fd.append('wip_url', wipUrl)
         fd.append('sheet_url', document.getElementById('wip-sheet-url').value)
+        fd.append('job_id', jobId)
         const res = await fetch('/run-wip-live', { method: 'POST', body: fd })
         if (!res.ok) {
           const err = await res.json().catch(() => null)
-          showError('wip-error', (err && (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail))) || 'Server error (' + res.status + ')'); return
+          const detail = (err && (typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail))) || 'Server error (' + res.status + ')'
+          showError('wip-error', detail)
+          pc.fail()
+          return
         }
         const data = await res.json()
         renderWIP(data); updateLastRun()
-      } catch (e) { showError('wip-error', e.message === 'Failed to fetch' ? 'Could not connect.' : e.message) }
-      finally { setBtn(false) }
+        pc.done('Done — ' + (data.rows ? data.rows.length : 0) + ' orders loaded')
+      } catch (e) {
+        showError('wip-error', e.message === 'Failed to fetch' ? 'Could not connect.' : e.message)
+        pc.fail()
+      } finally {
+        setLiveRunActive(false)
+      }
     }
 
     async function downloadGas() {

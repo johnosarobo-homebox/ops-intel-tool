@@ -150,10 +150,14 @@ def _clean_tseg_id(val):
     return normalise_tseg_id(val) or ""
 
 
-def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
+def run_wip_check(trevor_df: pd.DataFrame, wip_url: str, progress_cb=None) -> dict:
     """Main entry point — cross-references Trevor export against WIP sheet.
     Returns summary metrics, per-supplier breakdowns, cohort analysis, and the
-    merged row data for the frontend table."""
+    merged row data for the frontend table.
+
+    progress_cb(current, total) is optional — when supplied it's forwarded
+    into the ThreadPoolExecutor loop of the TSEG API enrichment phase so the
+    caller can drive a progress bar."""
 
     # Field mapping: True = required, False = optional (gracefully absent)
     trevor_fields = {
@@ -236,16 +240,27 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
     # Fire up to 20 threads in parallel.  Each thread calls get_contract()
     # which sleeps 0.2s per call to stay within the 300 req/min rate limit.
     # Per-row errors are swallowed so one bad ID can't crash the batch.
+    #
+    # progress_cb(current, total) fires once at (0, total) before any worker
+    # starts, then after every 10 completed futures, plus a final full tick.
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     tseg_ids = merged[tseg_col].astype(str).tolist()
-    api_results = [None] * len(tseg_ids)
+    total_api = len(tseg_ids)
+    api_results = [None] * total_api
+
+    if progress_cb:
+        try:
+            progress_cb(0, total_api)
+        except Exception:
+            pass
 
     with ThreadPoolExecutor(max_workers=20) as executor:
         future_to_idx = {
             executor.submit(get_contract, tid): i
             for i, tid in enumerate(tseg_ids)
         }
+        completed = 0
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             try:
@@ -255,6 +270,18 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
                     "tseg_service_name": "", "tseg_order_status": "Not found",
                     "tseg_service_start": "", "tseg_error": "Worker failed",
                 }
+            completed += 1
+            if progress_cb and completed % 10 == 0:
+                try:
+                    progress_cb(completed, total_api)
+                except Exception:
+                    pass
+
+    if progress_cb:
+        try:
+            progress_cb(total_api, total_api)
+        except Exception:
+            pass
 
     merged["tseg_service_name"]  = [r.get("tseg_service_name", "")  for r in api_results]
     merged["tseg_order_status"]  = [r.get("tseg_order_status", "")  for r in api_results]
@@ -376,10 +403,12 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str) -> dict:
     }
 
 
-def run_wip_check_live(wip_url: str) -> dict:
+def run_wip_check_live(wip_url: str, progress_cb=None) -> dict:
     """V2 entry point — Homebox data is read directly from the Trevor WIP sheet
     (WIP_SHEET_URL env var) instead of from a CSV upload. The TSEG WIP sheet URL
-    is still passed in by the caller (Tom's live sheet)."""
+    is still passed in by the caller (Tom's live sheet).
+
+    progress_cb(current, total) forwards to the TSEG API enrichment loop."""
     homebox_url = os.environ.get("WIP_SHEET_URL", "").strip()
     if not homebox_url:
         raise RuntimeError("WIP_SHEET_URL env var is not set — cannot load Homebox WIP data.")
@@ -388,4 +417,4 @@ def run_wip_check_live(wip_url: str) -> dict:
     trevor_df = read_sheet_as_df(homebox_url)
     if trevor_df.empty:
         raise RuntimeError("Homebox WIP Trevor sheet is empty — check the sheet URL and sharing permissions.")
-    return run_wip_check(trevor_df, wip_url)
+    return run_wip_check(trevor_df, wip_url, progress_cb=progress_cb)

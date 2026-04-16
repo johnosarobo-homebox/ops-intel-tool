@@ -12,6 +12,8 @@ All processing is in-memory per request — no data is persisted server-side.
 
 import io
 import os
+import json
+import asyncio
 import pandas as pd
 import uvicorn
 import webbrowser
@@ -35,6 +37,26 @@ BASE_DIR = Path(__file__).parent
 # Guard against oversized uploads — 20 MB covers the largest Trevor exports
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
+# ── Live-run progress tracking ──────────────────────────────────────────────
+# Keyed by the job_id the client generates before kicking off a live run.
+# Each entry:  {stage: str, current: int, total: int, done: bool, error: str}
+# Dict writes are atomic under the GIL so no explicit lock is needed for the
+# simple assignments we do here.  Entries are left in place after the run
+# completes — the tool's usage volume is low enough that this is negligible.
+PROGRESS_STORE: dict = {}
+
+
+def _init_progress(job_id: str, stage: str = "Starting...") -> None:
+    PROGRESS_STORE[job_id] = {
+        "stage": stage, "current": 0, "total": 0, "done": False, "error": "",
+    }
+
+
+def _update_progress(job_id: str, **fields) -> None:
+    if job_id in PROGRESS_STORE:
+        PROGRESS_STORE[job_id].update(fields)
+
+
 app = FastAPI()
 
 app.add_middleware(
@@ -53,6 +75,38 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 @app.get("/")
 def root():
     return FileResponse(str(BASE_DIR / "static" / "index.html"))
+
+
+# ── Server-Sent Events progress stream ──────────────────────────────────────
+# The client opens this stream alongside its POST to /run-sla-live or
+# /run-wip-live and reads progress updates until the job reports done=True.
+# We poll PROGRESS_STORE every 500ms.  If the job_id hasn't been registered
+# yet we return a safe default — the POST handler initialises the entry on
+# its first line so the race window is tiny.
+
+@app.get("/progress/{job_id}")
+async def progress_stream(job_id: str):
+    async def generator():
+        default = {"stage": "Waiting...", "current": 0, "total": 0, "done": False, "error": ""}
+        last_payload = None
+        # Safety cap — an SSE stream should never run longer than 15 minutes.
+        # At 500ms polling that's 1800 iterations. If the job never completes
+        # the client should see no further updates and close its side.
+        for _ in range(1800):
+            state = PROGRESS_STORE.get(job_id, default)
+            payload = json.dumps(state)
+            if payload != last_payload:
+                yield f"data: {payload}\n\n"
+                last_payload = payload
+            if state.get("done"):
+                break
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 async def read_csv(upload: UploadFile, label: str = "file") -> pd.DataFrame:
@@ -231,21 +285,50 @@ async def run_gas_live(sheet_url: str = Form(default="")):
 
 
 @app.post("/run-sla-live")
-async def run_sla_live(sheet_url: str = Form(default="")):
+def run_sla_live(
+    sheet_url: str = Form(default=""),
+    job_id:    str = Form(default=""),
+):
+    """Sync handler — FastAPI runs this in a worker thread so the async SSE
+    progress endpoint can serve updates concurrently on the event loop."""
+    # Initialise the progress entry on the very first line so the SSE stream
+    # (which may already be open) has something to read.
+    if job_id:
+        _init_progress(job_id, "Loading Trevor data...")
+
     url = _require_env("SLA_SHEET_URL")
     try:
         df = read_sheet_as_df(url)
     except Exception as e:
+        if job_id:
+            _update_progress(job_id, done=True, error=str(e))
         raise HTTPException(502, f"Could not read SLA Trevor sheet: {e}")
     if df.empty:
+        if job_id:
+            _update_progress(job_id, done=True, error="SLA Trevor sheet returned no rows.")
         raise HTTPException(400, "SLA Trevor sheet returned no rows.")
+
+    # Progress callback closure — fires (0, total), then every 10 completed
+    # workers, then (total, total).  Stage text is regenerated each tick so
+    # the frontend shows accurate counts without needing a second channel.
+    def _on_api_progress(current: int, total: int):
+        if not job_id:
+            return
+        _update_progress(
+            job_id,
+            stage=f"Calling TSEG API ({current} / {total})...",
+            current=current, total=total,
+        )
+
     try:
-        # Live endpoint enriches every awaiting order with a TSEG API call so
-        # the frontend can surface REGISTERING 10d+ breaches.
-        result = run_sla_check(df, enrich_tseg=True)
+        result = run_sla_check(df, enrich_tseg=True, progress_cb=_on_api_progress)
     except ColumnNotFoundError as e:
+        if job_id:
+            _update_progress(job_id, done=True, error=str(e))
         raise HTTPException(400, str(e))
     except Exception as e:
+        if job_id:
+            _update_progress(job_id, done=True, error=str(e))
         raise HTTPException(400, str(e))
 
     if sheet_url.strip() and result["rows"]:
@@ -256,24 +339,79 @@ async def run_sla_live(sheet_url: str = Form(default="")):
             result["sheet_error"] = str(e)
 
     clean_nan_in_rows(result["rows"])
+
+    if job_id:
+        _update_progress(
+            job_id,
+            stage=f"Done — {len(result['rows'])} orders loaded",
+            done=True,
+        )
     return result
 
 
 @app.post("/run-wip-live")
-async def run_wip_live(
+def run_wip_live(
     wip_url:   str = Form(...),
     sheet_url: str = Form(default=""),
+    job_id:    str = Form(default=""),
 ):
     """V2 WIP cross-reference. Homebox WIP data is read from WIP_SHEET_URL env var.
     The TSEG WIP sheet URL still comes from the user (Tom's live sheet).
-    Each matched order is enriched with a live TSEG API call."""
+    Each matched order is enriched with a live TSEG API call.
+
+    Sync handler — FastAPI runs this in a worker thread so the SSE progress
+    endpoint can serve updates concurrently on the event loop.
+    """
+    if job_id:
+        _init_progress(job_id, "Loading Trevor data...")
+
+    homebox_url = os.environ.get("WIP_SHEET_URL", "").strip()
+    if not homebox_url:
+        if job_id:
+            _update_progress(job_id, done=True, error="WIP_SHEET_URL env var is not set.")
+        raise HTTPException(500, "WIP_SHEET_URL env var is not set — cannot load Homebox WIP data.")
+
     try:
-        result = run_wip_check_live(wip_url)
+        trevor_df = read_sheet_as_df(homebox_url)
+    except Exception as e:
+        if job_id:
+            _update_progress(job_id, done=True, error=str(e))
+        raise HTTPException(502, f"Could not read Homebox WIP Trevor sheet: {e}")
+
+    if trevor_df.empty:
+        if job_id:
+            _update_progress(job_id, done=True, error="Homebox WIP Trevor sheet is empty.")
+        raise HTTPException(400, "Homebox WIP Trevor sheet is empty — check the sheet URL and sharing permissions.")
+
+    # Stage 2 — reading the TSEG WIP sheet (happens inside run_wip_check,
+    # before API enrichment).  The stage flips to 'Calling TSEG API...' as
+    # soon as the first progress callback tick arrives from the enrichment
+    # ThreadPoolExecutor, so no extra hook is needed between these phases.
+    if job_id:
+        _update_progress(job_id, stage="Reading TSEG WIP sheet...", current=0, total=0)
+
+    def _on_api_progress(current: int, total: int):
+        if not job_id:
+            return
+        _update_progress(
+            job_id,
+            stage=f"Calling TSEG API ({current} / {total})...",
+            current=current, total=total,
+        )
+
+    try:
+        result = run_wip_check(trevor_df, wip_url, progress_cb=_on_api_progress)
     except ColumnNotFoundError as e:
+        if job_id:
+            _update_progress(job_id, done=True, error=str(e))
         raise HTTPException(400, str(e))
     except RuntimeError as e:
+        if job_id:
+            _update_progress(job_id, done=True, error=str(e))
         raise HTTPException(500, str(e))
     except Exception as e:
+        if job_id:
+            _update_progress(job_id, done=True, error=str(e))
         raise HTTPException(400, str(e))
 
     if sheet_url.strip() and result["rows"]:
@@ -284,6 +422,13 @@ async def run_wip_live(
             result["sheet_error"] = str(e)
 
     clean_nan_in_rows(result["rows"])
+
+    if job_id:
+        _update_progress(
+            job_id,
+            stage=f"Done — {len(result['rows'])} orders loaded",
+            done=True,
+        )
     return result
 
 

@@ -45,22 +45,37 @@ def _cohort_label(days):
     return "60+"
 
 
-def _enrich_with_tseg_api(awaiting: pd.DataFrame, tseg_col: str) -> pd.DataFrame:
+def _enrich_with_tseg_api(awaiting: pd.DataFrame, tseg_col: str, progress_cb=None) -> pd.DataFrame:
     """Parallel TSEG API enrichment — mirrors the wip_checker pattern.
     Fires up to 20 concurrent workers; each get_contract() call sleeps 0.2s.
-    Per-row errors are swallowed so one bad ID can't crash the batch."""
+    Per-row errors are swallowed so one bad ID can't crash the batch.
+
+    progress_cb(current, total) is invoked once up-front with (0, total) and
+    then after every 10 completed futures (plus a final full tick) so the
+    frontend progress bar updates smoothly without flooding the SSE stream.
+    """
     # Local imports keep the CSV-upload path free of the optional requests dep
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from tseg_api import get_contract
 
     tseg_ids = awaiting[tseg_col].astype(str).tolist()
-    api_results = [None] * len(tseg_ids)
+    total = len(tseg_ids)
+    api_results = [None] * total
+
+    if progress_cb:
+        # Emit an initial tick so the frontend flips its stage label to the
+        # API phase immediately (rather than waiting for the first 10 to land).
+        try:
+            progress_cb(0, total)
+        except Exception:
+            pass
 
     with ThreadPoolExecutor(max_workers=20) as executor:
         future_to_idx = {
             executor.submit(get_contract, tid): i
             for i, tid in enumerate(tseg_ids)
         }
+        completed = 0
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             try:
@@ -70,6 +85,18 @@ def _enrich_with_tseg_api(awaiting: pd.DataFrame, tseg_col: str) -> pd.DataFrame
                     "tseg_service_name": "", "tseg_order_status": "Not found",
                     "tseg_service_start": "", "tseg_error": "Worker failed",
                 }
+            completed += 1
+            if progress_cb and completed % 10 == 0:
+                try:
+                    progress_cb(completed, total)
+                except Exception:
+                    pass
+
+    if progress_cb:
+        try:
+            progress_cb(total, total)
+        except Exception:
+            pass
 
     awaiting = awaiting.copy()
     awaiting["tseg_service_name"]  = [r.get("tseg_service_name", "")  for r in api_results]
@@ -78,7 +105,7 @@ def _enrich_with_tseg_api(awaiting: pd.DataFrame, tseg_col: str) -> pd.DataFrame
     return awaiting
 
 
-def run_sla_check(df: pd.DataFrame, enrich_tseg: bool = False) -> dict:
+def run_sla_check(df: pd.DataFrame, enrich_tseg: bool = False, progress_cb=None) -> dict:
     """Main SLA breach detector.
 
     When enrich_tseg=True each awaiting order is enriched with a live TSEG
@@ -147,7 +174,7 @@ def run_sla_check(df: pd.DataFrame, enrich_tseg: bool = False) -> dict:
     # ── TSEG API enrichment (optional) ────────────────────────────────
     registering_breach_count = 0
     if enrich_tseg and not awaiting.empty:
-        awaiting = _enrich_with_tseg_api(awaiting, tseg_col)
+        awaiting = _enrich_with_tseg_api(awaiting, tseg_col, progress_cb=progress_cb)
         awaiting["registering_breach"] = (
             (awaiting["tseg_order_status"].astype(str).str.upper().str.strip() == "REGISTERING")
             & (awaiting["days_elapsed"] >= REGISTERING_BREACH_DAYS)
