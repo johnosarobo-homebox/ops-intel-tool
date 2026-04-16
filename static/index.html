@@ -245,6 +245,13 @@
       background: var(--pill-red-bg); border-color: var(--pill-red-fg);
       color: var(--pill-red-fg);
     }
+    .filter-btn.registering-breach {
+      border-color: var(--amber); color: var(--amber);
+    }
+    .filter-btn.registering-breach.active {
+      background: var(--pill-amber-bg); border-color: var(--amber);
+      color: var(--pill-amber-fg);
+    }
     .row-highlight { background: var(--pill-red-bg) !important; }
 
     /* ── ERROR / SUCCESS ───────────────────────────────────────────── */
@@ -597,7 +604,7 @@
         </div>
       </div>
 
-      <div id="sla-local-metrics" style="display:none;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
+      <div id="sla-local-metrics" style="display:none;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px;">
         <div class="metric-card">
           <div class="metric-label">Awaiting feedback</div>
           <div class="metric-value" id="slm-total"></div>
@@ -614,15 +621,23 @@
           <div class="metric-label">Within SLA</div>
           <div class="metric-value green" id="slm-ok"></div>
         </div>
+        <div class="metric-card">
+          <div class="metric-label">Registering 10d+</div>
+          <div class="metric-value amber" id="slm-reg"></div>
+        </div>
       </div>
 
       <div id="sla-supplier-breakdown"></div>
       <div id="sla-search-bar" style="display:none;margin-bottom:16px;">
-        <div style="position:relative;width:280px;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);">
-            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-          </svg>
-          <input type="text" id="sla-search" class="text-input" placeholder="Search by order ID..." oninput="applySLAFilters()" style="padding-left:34px;">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+          <div style="position:relative;flex:0 0 280px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" style="position:absolute;left:12px;top:50%;transform:translateY(-50%);">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="sla-search" class="text-input" placeholder="Search by order ID..." oninput="applySLAFilters()" style="padding-left:34px;">
+          </div>
+          <div id="sla-filters" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+          <button id="btn-sla-download" onclick="downloadSLA()" class="btn-outline" style="margin-left:auto;white-space:nowrap;">Download CSV</button>
         </div>
       </div>
       <div id="sla-table-wrap" style="display:none;"></div>
@@ -722,6 +737,9 @@
 
     // SLA module state
     let slaSortCol = 'days_elapsed', slaSortAsc = false, slaAllRows = [], slaCols = [], slaSearchQuery = ''
+    let slaRegFilter = false  // "Registering 10d+" filter — amber-bordered toggle
+    let slaColMeta = {}       // Column metadata sent from backend (for CSV export)
+    let slaEnriched = false   // Was the last run TSEG-enriched?
 
     let activeTab = 'gas'
     let isDark = localStorage.getItem('theme') === 'dark'
@@ -977,6 +995,7 @@
       document.getElementById('slm-breach').textContent = data.summary.breached
       document.getElementById('slm-risk').textContent = data.summary.at_risk
       document.getElementById('slm-ok').textContent = data.summary.ok
+      document.getElementById('slm-reg').textContent = data.summary.registering_breach || 0
       document.getElementById('sla-local-metrics').style.display = 'grid'
 
       const badge = document.getElementById('badge-sla')
@@ -1004,9 +1023,31 @@
       }
 
       slaAllRows = data.rows; slaCols = data.columns
+      slaColMeta = data.col_meta || {}
+      slaEnriched = !!data.enriched
       slaSortCol = 'days_elapsed'; slaSortAsc = false; slaSearchQuery = ''
+      slaRegFilter = false
       document.getElementById('sla-search').value = ''
       document.getElementById('sla-search-bar').style.display = 'block'
+
+      // Render the "Registering 10d+" filter button (amber-bordered, toggle).
+      // Only meaningful when the TSEG API enrichment ran for this result.
+      const regCount = data.summary.registering_breach || 0
+      const filtersDiv = document.getElementById('sla-filters')
+      if (slaEnriched) {
+        filtersDiv.innerHTML = '<button id="sla-filter-reg" class="filter-btn registering-breach' +
+          (slaRegFilter ? ' active' : '') + '" onclick="toggleSLARegFilter()">Registering 10d+ (' + regCount + ')</button>'
+      } else {
+        filtersDiv.innerHTML = ''
+      }
+
+      applySLAFilters()
+    }
+
+    function toggleSLARegFilter() {
+      slaRegFilter = !slaRegFilter
+      const btn = document.getElementById('sla-filter-reg')
+      if (btn) btn.classList.toggle('active', slaRegFilter)
       applySLAFilters()
     }
 
@@ -1019,6 +1060,7 @@
     function applySLAFilters() {
       slaSearchQuery = (document.getElementById('sla-search').value || '').trim().toLowerCase()
       let rows = slaAllRows
+      if (slaRegFilter) rows = rows.filter(r => r.registering_breach === true || r.registering_breach === 'True')
       if (slaSearchQuery) {
         rows = rows.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(slaSearchQuery)))
       }
@@ -1026,9 +1068,27 @@
       renderSLATable(rows)
     }
 
+    // SLA table headers are built from slaCols which comes from the backend.
+    // Inject API STATUS + SERVICE between RAG and the provider/bill_name col
+    // whenever the backend has enriched with TSEG API data. Keeping the
+    // insertion logic here (not in the backend) means the CSV-upload path
+    // (no enrichment) still renders the original column set.
+    function _slaColumnsForTable() {
+      if (!slaEnriched) return slaCols.slice()
+      const cols = slaCols.slice()
+      const ragIdx = cols.indexOf('rag')
+      // Remove any already-present duplicates of the TSEG columns so
+      // re-renders don't stack them.
+      const cleaned = cols.filter(c => c !== 'tseg_order_status' && c !== 'tseg_service_name')
+      const insertAt = cleaned.indexOf('rag') + 1
+      cleaned.splice(insertAt, 0, 'tseg_order_status', 'tseg_service_name')
+      return cleaned
+    }
+
     function renderSLATable(rows) {
       const wrap = document.getElementById('sla-table-wrap')
-      wrap.innerHTML = buildSortableTable(slaCols, rows, 'sortSLA', slaSortCol, slaSortAsc, (row, col) => {
+      const cols = _slaColumnsForTable()
+      wrap.innerHTML = buildSortableTable(cols, rows, 'sortSLA', slaSortCol, slaSortAsc, (row, col) => {
         if (col === 'rag') {
           const cls = { breached: 'pill-red', at_risk: 'pill-amber', ok: 'pill-green' }[row[col]] || ''
           const label = { breached: 'Breached', at_risk: 'At risk', ok: 'Within SLA' }[row[col]] || row[col]
@@ -1039,9 +1099,115 @@
           return '<span style="font-size:18px;font-weight:700;color:' + c + ';">' + row[col] + '</span><span style="font-size:11px;color:var(--text-muted);margin-left:2px;">d</span>'
         }
         if (col === 'fuel') return fuelPill(row[col])
+        if (col === 'tseg_order_status') return row[col] ? _tsegStatusBadge(row[col]) : '<span style="color:var(--text-muted);">—</span>'
+        if (col === 'tseg_service_name') return row[col] || '<span style="color:var(--text-muted);">—</span>'
         return row[col] ?? ''
       })
       wrap.style.display = 'block'; wrap.classList.add('fade-in')
+    }
+
+    // ── SLA CSV EXPORT ────────────────────────────────────────────
+    // Comprehensive export covering every column the COO asked for,
+    // regardless of whether the live TSEG enrichment ran.  TSEG columns
+    // are simply blank when enrichment hasn't happened.
+    const SLA_CSV_SCHEMA = [
+      // [header, source key in row, formatter]
+      ['Order ID',              'order_id'],
+      ['Bill Payment Reference','tseg_id',     'tseg-text'],
+      ['Property Line 1',       'address'],
+      ['Bill Provider Name',    'provider'],
+      ['Bill Name',             'bill_name'],
+      ['Bill State',            'status'],
+      ['Bill State Updated At', 'updated_at',  'date'],
+      ['Days Elapsed',          'days_elapsed','int'],
+      ['RAG',                   'rag',         'rag'],
+      ['API Status',            'tseg_order_status'],
+      ['TSEG Service Name',     'tseg_service_name'],
+      ['TSEG Service Start',    'tseg_service_start','date'],
+      ['Registering Breach',    'registering_breach','bool'],
+      ['Cohort',                'cohort'],
+      ['Fuel',                  'fuel'],
+    ]
+
+    function _fmtDateDDMMYYYY(raw) {
+      if (!raw) return ''
+      const s = String(raw).trim()
+      // Already DD/MM/YYYY?
+      if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) return s.slice(0, 10)
+      // ISO 8601 (YYYY-MM-DD...)
+      const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+      if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`
+      // Last resort — try native Date
+      const d = new Date(s)
+      if (!isNaN(d.getTime())) {
+        const dd = String(d.getDate()).padStart(2, '0')
+        const mm = String(d.getMonth() + 1).padStart(2, '0')
+        const yyyy = d.getFullYear()
+        return `${dd}/${mm}/${yyyy}`
+      }
+      return s
+    }
+
+    function _csvEscape(val) {
+      if (val == null) return ''
+      const s = String(val)
+      if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+        return '"' + s.replace(/"/g, '""') + '"'
+      }
+      return s
+    }
+
+    function downloadSLA() {
+      if (!slaAllRows || !slaAllRows.length) return
+      const meta = slaColMeta || {}
+      const keyLookup = {
+        order_id:   meta.order_id,
+        tseg_id:    meta.tseg_id,
+        address:    meta.address,
+        provider:   meta.provider,
+        bill_name:  meta.bill_name,
+        status:     meta.status,
+        updated_at: meta.updated_at,
+      }
+      const ragLabels = { breached: 'Breached', at_risk: 'At risk', ok: 'Within SLA' }
+
+      const headerRow = SLA_CSV_SCHEMA.map(([h]) => _csvEscape(h)).join(',')
+      const dataRows = slaAllRows.map(row => {
+        return SLA_CSV_SCHEMA.map(([, sourceKey, formatter]) => {
+          // Dynamic columns are keyed via meta; direct fields are literal.
+          const actualKey = keyLookup[sourceKey] !== undefined ? keyLookup[sourceKey] : sourceKey
+          const raw = actualKey ? row[actualKey] : ''
+          let val = raw == null ? '' : raw
+          if (formatter === 'tseg-text') {
+            val = val === '' || val == null ? '' : "'" + String(val)
+          } else if (formatter === 'int') {
+            const n = parseInt(val, 10)
+            val = isNaN(n) ? '' : String(n)
+          } else if (formatter === 'rag') {
+            val = ragLabels[val] || val || ''
+          } else if (formatter === 'bool') {
+            val = (val === true || val === 'True' || val === 'true') ? 'TRUE' : 'FALSE'
+          } else if (formatter === 'date') {
+            val = _fmtDateDDMMYYYY(val)
+          }
+          return _csvEscape(val)
+        }).join(',')
+      })
+
+      const csv = [headerRow].concat(dataRows).join('\r\n')
+      const today = new Date()
+      const yyyy = today.getFullYear()
+      const mm = String(today.getMonth() + 1).padStart(2, '0')
+      const dd = String(today.getDate()).padStart(2, '0')
+      const filename = `sla_report_${yyyy}-${mm}-${dd}.csv`
+
+      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = filename
+      document.body.appendChild(a); a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
     }
 
     // ── WIP CROSS-REFERENCE ───────────────────────────────────────

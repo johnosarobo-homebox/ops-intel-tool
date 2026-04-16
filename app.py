@@ -240,7 +240,9 @@ async def run_sla_live(sheet_url: str = Form(default="")):
     if df.empty:
         raise HTTPException(400, "SLA Trevor sheet returned no rows.")
     try:
-        result = run_sla_check(df)
+        # Live endpoint enriches every awaiting order with a TSEG API call so
+        # the frontend can surface REGISTERING 10d+ breaches.
+        result = run_sla_check(df, enrich_tseg=True)
     except ColumnNotFoundError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
