@@ -25,6 +25,7 @@ from utils import (
     normalise_tseg_id,
     normalise_tseg_series,
     classify_fuel,
+    match_service_to_bill,
 )
 from tseg_api import get_contract
 
@@ -169,6 +170,7 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str, progress_cb=None) -> di
         "status":        True,
         "order_started": False,
         "mprn":          False,
+        "bill_name":     False,
     }
 
     col_map = {}
@@ -185,6 +187,7 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str, progress_cb=None) -> di
     provider_col     = col_map.get("provider")
     order_started_col = col_map.get("order_started")
     mprn_col         = col_map.get("mprn")
+    bill_name_col    = col_map.get("bill_name")
 
     trevor = trevor_df.copy()
 
@@ -283,10 +286,30 @@ def run_wip_check(trevor_df: pd.DataFrame, wip_url: str, progress_cb=None) -> di
         except Exception:
             pass
 
-    merged["tseg_service_name"]  = [r.get("tseg_service_name", "")  for r in api_results]
-    merged["tseg_order_status"]  = [r.get("tseg_order_status", "")  for r in api_results]
-    merged["tseg_service_start"] = [r.get("tseg_service_start", "") for r in api_results]
-    merged["tseg_error"]         = [r.get("tseg_error", "")         for r in api_results]
+    # Fuel-matched service selection — uses bill_name (when available) to pick
+    # the correct service (gas or electricity) from the API response's services
+    # array.  Falls back to the first service when bill_name is absent or when
+    # no fuel-name match is found.
+    bn_col = bill_name_col or ""
+    svc_names, svc_statuses, svc_starts, svc_errors = [], [], [], []
+    for i, r in enumerate(api_results):
+        services = r.get("tseg_services", []) if r else []
+        bn = merged.iloc[i].get(bn_col, "") if bn_col and bn_col in merged.columns else ""
+        svc = match_service_to_bill(services, bn)
+        if svc:
+            svc_names.append(svc.get("name", ""))
+            svc_statuses.append(svc.get("order_status", ""))
+            svc_starts.append(svc.get("start_date", ""))
+        else:
+            svc_names.append("")
+            svc_statuses.append(r.get("tseg_order_status", "Not found") if r else "Not found")
+            svc_starts.append("")
+        svc_errors.append(r.get("tseg_error", "") if r else "Worker failed")
+
+    merged["tseg_service_name"]  = svc_names
+    merged["tseg_order_status"]  = svc_statuses
+    merged["tseg_service_start"] = svc_starts
+    merged["tseg_error"]         = svc_errors
 
     all_cols = [c for c in keep if c in merged.columns] + \
                ["wip_tab", "wip_reason", "wip_provider", "wip_supply_status", "wip_services_start",

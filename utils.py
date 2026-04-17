@@ -125,6 +125,35 @@ def classify_fuel(mprn_value) -> str:
     return "Has gas" if has_gas(mprn_value) else "Elec only"
 
 
+# ── TSEG service-to-bill matching ─────────────────────────────────────────────
+
+def match_service_to_bill(tseg_services, bill_name):
+    """Given the full services list from a TSEG API response and a bill_name
+    (e.g. 'Octopus - Gas'), return the service dict that matches the fuel
+    type implied by the bill name.
+
+    This prevents a gas bill row from showing the electricity API status and
+    vice versa — both services come from the same API call per TSEG ID, so
+    we just pick the right one.
+
+    Falls back to the first service if no fuel match is found.
+    Returns None when there are no services at all.
+    """
+    if not tseg_services:
+        return None
+    bill_name_lower = str(bill_name).lower() if bill_name else ""
+    target_fuel = None
+    if "gas" in bill_name_lower:
+        target_fuel = "gas"
+    elif "electric" in bill_name_lower:
+        target_fuel = "electricity"
+    if target_fuel:
+        for service in tseg_services:
+            if target_fuel in str(service.get("name", "")).lower():
+                return service
+    return tseg_services[0] if tseg_services else None
+
+
 # ── RAG / SLA helpers ────────────────────────────────────────────────────────
 
 def compute_days_elapsed(df, date_col):

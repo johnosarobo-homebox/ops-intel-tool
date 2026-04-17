@@ -252,6 +252,20 @@
       background: var(--pill-amber-bg); border-color: var(--amber);
       color: var(--pill-amber-fg);
     }
+    .filter-btn.not-ordered {
+      border-color: var(--pill-purple-fg); color: var(--pill-purple-fg);
+    }
+    .filter-btn.not-ordered.active {
+      background: var(--pill-purple-bg); border-color: var(--pill-purple-fg);
+      color: var(--pill-purple-fg);
+    }
+    .filter-btn.api-active {
+      border-color: var(--green); color: var(--green);
+    }
+    .filter-btn.api-active.active {
+      background: var(--pill-green-bg); border-color: var(--green);
+      color: var(--pill-green-fg);
+    }
     .row-highlight { background: var(--pill-red-bg) !important; }
 
     /* ── ERROR / SUCCESS ───────────────────────────────────────────── */
@@ -671,7 +685,7 @@
         </div>
       </div>
 
-      <div id="sla-local-metrics" style="display:none;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px;">
+      <div id="sla-local-metrics" style="display:none;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px;">
         <div class="metric-card">
           <div class="metric-label">Awaiting feedback</div>
           <div class="metric-value" id="slm-total"></div>
@@ -691,6 +705,14 @@
         <div class="metric-card">
           <div class="metric-label">Registering 10d+</div>
           <div class="metric-value amber" id="slm-reg"></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Not ordered</div>
+          <div class="metric-value" id="slm-notord" style="color:var(--pill-purple-fg);"></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Active</div>
+          <div class="metric-value green" id="slm-active"></div>
         </div>
       </div>
 
@@ -813,9 +835,11 @@
 
     // SLA module state
     let slaSortCol = 'days_elapsed', slaSortAsc = false, slaAllRows = [], slaCols = [], slaSearchQuery = ''
-    let slaRegFilter = false  // "Registering 10d+" filter — amber-bordered toggle
-    let slaColMeta = {}       // Column metadata sent from backend (for CSV export)
-    let slaEnriched = false   // Was the last run TSEG-enriched?
+    let slaRegFilter = false    // "Registering 10d+" filter
+    let slaNotOrdFilter = false // "Not ordered" filter
+    let slaActiveFilter = false // "Active" filter
+    let slaColMeta = {}         // Column metadata from backend (for CSV export)
+    let slaEnriched = false     // Was the last run TSEG-enriched?
 
     let activeTab = 'gas'
     let isDark = localStorage.getItem('theme') === 'dark'
@@ -1226,6 +1250,8 @@
       document.getElementById('slm-risk').textContent = data.summary.at_risk
       document.getElementById('slm-ok').textContent = data.summary.ok
       document.getElementById('slm-reg').textContent = data.summary.registering_breach || 0
+      document.getElementById('slm-notord').textContent = data.summary.not_ordered || 0
+      document.getElementById('slm-active').textContent = data.summary.active || 0
       document.getElementById('sla-local-metrics').style.display = 'grid'
 
       const badge = document.getElementById('badge-sla')
@@ -1256,17 +1282,20 @@
       slaColMeta = data.col_meta || {}
       slaEnriched = !!data.enriched
       slaSortCol = 'days_elapsed'; slaSortAsc = false; slaSearchQuery = ''
-      slaRegFilter = false
+      slaRegFilter = false; slaNotOrdFilter = false; slaActiveFilter = false
       document.getElementById('sla-search').value = ''
       document.getElementById('sla-search-bar').style.display = 'block'
 
-      // Render the "Registering 10d+" filter button (amber-bordered, toggle).
-      // Only meaningful when the TSEG API enrichment ran for this result.
-      const regCount = data.summary.registering_breach || 0
+      // Render API-status filter buttons — only shown when TSEG enrichment ran.
       const filtersDiv = document.getElementById('sla-filters')
       if (slaEnriched) {
-        filtersDiv.innerHTML = '<button id="sla-filter-reg" class="filter-btn registering-breach' +
-          (slaRegFilter ? ' active' : '') + '" onclick="toggleSLARegFilter()">Registering 10d+ (' + regCount + ')</button>'
+        const regCount  = data.summary.registering_breach || 0
+        const noCount   = data.summary.not_ordered || 0
+        const actCount  = data.summary.active || 0
+        filtersDiv.innerHTML =
+          '<button id="sla-filter-reg" class="filter-btn registering-breach" onclick="toggleSLAStatusFilter(\'reg\')">Registering 10d+ (' + regCount + ')</button>' +
+          '<button id="sla-filter-notord" class="filter-btn not-ordered" onclick="toggleSLAStatusFilter(\'notord\')">Not ordered (' + noCount + ')</button>' +
+          '<button id="sla-filter-active" class="filter-btn api-active" onclick="toggleSLAStatusFilter(\'active\')">Active (' + actCount + ')</button>'
       } else {
         filtersDiv.innerHTML = ''
       }
@@ -1274,10 +1303,18 @@
       applySLAFilters()
     }
 
-    function toggleSLARegFilter() {
-      slaRegFilter = !slaRegFilter
-      const btn = document.getElementById('sla-filter-reg')
-      if (btn) btn.classList.toggle('active', slaRegFilter)
+    function toggleSLAStatusFilter(which) {
+      // Toggle the requested filter — multiple can be active simultaneously
+      // so the team can combine (e.g. Registering 10d+ AND Not ordered).
+      if (which === 'reg')     slaRegFilter = !slaRegFilter
+      if (which === 'notord')  slaNotOrdFilter = !slaNotOrdFilter
+      if (which === 'active')  slaActiveFilter = !slaActiveFilter
+      const regBtn  = document.getElementById('sla-filter-reg')
+      const noBtn   = document.getElementById('sla-filter-notord')
+      const actBtn  = document.getElementById('sla-filter-active')
+      if (regBtn)  regBtn.classList.toggle('active', slaRegFilter)
+      if (noBtn)   noBtn.classList.toggle('active', slaNotOrdFilter)
+      if (actBtn)  actBtn.classList.toggle('active', slaActiveFilter)
       applySLAFilters()
     }
 
@@ -1290,7 +1327,19 @@
     function applySLAFilters() {
       slaSearchQuery = (document.getElementById('sla-search').value || '').trim().toLowerCase()
       let rows = slaAllRows
-      if (slaRegFilter) rows = rows.filter(r => r.registering_breach === true || r.registering_breach === 'True')
+      // API-status filters combine via OR when multiple are active (e.g. show
+      // rows that are Registering 10d+ OR Not ordered OR Active). When none are
+      // active all rows pass through.
+      const anyStatusFilter = slaRegFilter || slaNotOrdFilter || slaActiveFilter
+      if (anyStatusFilter) {
+        rows = rows.filter(r => {
+          const st = String(r.tseg_order_status || '').toUpperCase().trim()
+          if (slaRegFilter && (r.registering_breach === true || r.registering_breach === 'True')) return true
+          if (slaNotOrdFilter && (st === 'NOT_ORDERED' || st === 'NOT ORDERED')) return true
+          if (slaActiveFilter && st === 'ACTIVE') return true
+          return false
+        })
+      }
       if (slaSearchQuery) {
         rows = rows.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(slaSearchQuery)))
       }

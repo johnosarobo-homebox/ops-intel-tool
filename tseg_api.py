@@ -95,6 +95,7 @@ def get_contract(tseg_id: str, today: Optional[str] = None, sleep: bool = True) 
             "name":         str(svc.get("name") or ""),
             "order_status": str(svc.get("order_status") or ""),
             "start_date":   str(svc.get("start_date") or ""),
+            "supplier":     str(svc.get("supplier") or ""),
         })
 
     if flat:

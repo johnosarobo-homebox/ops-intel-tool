@@ -8,6 +8,7 @@ from utils import (
     ColumnNotFoundError,
     classify_fuel,
     normalise_tseg_series,
+    match_service_to_bill,
 )
 
 AWAITING_KEYWORDS = ["feedback"]
@@ -99,9 +100,9 @@ def _enrich_with_tseg_api(awaiting: pd.DataFrame, tseg_col: str, progress_cb=Non
             pass
 
     awaiting = awaiting.copy()
-    awaiting["tseg_service_name"]  = [r.get("tseg_service_name", "")  for r in api_results]
-    awaiting["tseg_order_status"]  = [r.get("tseg_order_status", "")  for r in api_results]
-    awaiting["tseg_service_start"] = [r.get("tseg_service_start", "") for r in api_results]
+    # Store the full services list per row so fuel matching can pick the right one.
+    awaiting["_tseg_services"] = [r.get("tseg_services", []) for r in api_results]
+    awaiting["_tseg_error"]    = [r.get("tseg_error", "")     for r in api_results]
     return awaiting
 
 
@@ -173,13 +174,39 @@ def run_sla_check(df: pd.DataFrame, enrich_tseg: bool = False, progress_cb=None)
 
     # ── TSEG API enrichment (optional) ────────────────────────────────
     registering_breach_count = 0
+    not_ordered_count = 0
+    active_count = 0
     if enrich_tseg and not awaiting.empty:
         awaiting = _enrich_with_tseg_api(awaiting, tseg_col, progress_cb=progress_cb)
+
+        # Fuel-matched service selection — picks the service whose name
+        # matches the fuel type implied by bill_name (e.g. gas bill → gas
+        # service). Falls back to the first service when there's no match.
+        bn_col_for_match = bill_name_col or ""
+        svc_names, svc_statuses, svc_starts = [], [], []
+        for _, row in awaiting.iterrows():
+            bn = row.get(bn_col_for_match, "") if bn_col_for_match else ""
+            svc = match_service_to_bill(row.get("_tseg_services", []), bn)
+            if svc:
+                svc_names.append(svc.get("name", ""))
+                svc_statuses.append(svc.get("order_status", ""))
+                svc_starts.append(svc.get("start_date", ""))
+            else:
+                svc_names.append("")
+                svc_statuses.append("Not found")
+                svc_starts.append("")
+        awaiting["tseg_service_name"]  = svc_names
+        awaiting["tseg_order_status"]  = svc_statuses
+        awaiting["tseg_service_start"] = svc_starts
+
         awaiting["registering_breach"] = (
             (awaiting["tseg_order_status"].astype(str).str.upper().str.strip() == "REGISTERING")
             & (awaiting["days_elapsed"] >= REGISTERING_BREACH_DAYS)
         )
         registering_breach_count = int(awaiting["registering_breach"].sum())
+        status_upper = awaiting["tseg_order_status"].astype(str).str.upper().str.strip()
+        not_ordered_count = int((status_upper == "NOT_ORDERED").sum() + (status_upper == "NOT ORDERED").sum())
+        active_count = int((status_upper == "ACTIVE").sum())
     else:
         awaiting["tseg_service_name"]  = ""
         awaiting["tseg_order_status"]  = ""
@@ -247,6 +274,8 @@ def run_sla_check(df: pd.DataFrame, enrich_tseg: bool = False, progress_cb=None)
             "at_risk":             at_risk,
             "ok":                  ok,
             "registering_breach":  registering_breach_count,
+            "not_ordered":         not_ordered_count,
+            "active":              active_count,
         },
         "supplier_breakdown": supplier_breakdown,
         "columns":            out_cols,
