@@ -320,8 +320,25 @@ def run_sla_live(
             current=current, total=total,
         )
 
+    # Stage callback — lets run_sla_check flip the indicator label when it
+    # transitions from the TSEG API phase into the WIP presence check.
+    def _on_stage(text: str):
+        if not job_id:
+            return
+        _update_progress(job_id, stage=text, current=0, total=0)
+
+    # WIP presence check is best-effort — if the URL is missing we still run
+    # the SLA check (the frontend just hides the WIP TAB column in that case).
+    wip_url_env = os.environ.get("WIP_SHEET_URL", "").strip() or None
+
     try:
-        result = run_sla_check(df, enrich_tseg=True, progress_cb=_on_api_progress)
+        result = run_sla_check(
+            df,
+            enrich_tseg=True,
+            progress_cb=_on_api_progress,
+            wip_url=wip_url_env,
+            stage_cb=_on_stage,
+        )
     except ColumnNotFoundError as e:
         if job_id:
             _update_progress(job_id, done=True, error=str(e))

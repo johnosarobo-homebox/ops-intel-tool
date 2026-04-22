@@ -106,14 +106,46 @@ def _enrich_with_tseg_api(awaiting: pd.DataFrame, tseg_col: str, progress_cb=Non
     return awaiting
 
 
-def run_sla_check(df: pd.DataFrame, enrich_tseg: bool = False, progress_cb=None) -> dict:
+def _build_wip_presence_lookup(wip_url: str) -> dict:
+    """Reads every active tab on the TSEG WIP sheet (respecting SKIP_TABS)
+    and returns a lookup keyed by normalised 10-digit TSEG ID whose value is
+    the set of tab names the ID appears in.
+
+    We import the WIP reader from wip_checker so the tab-detection, header
+    cleanup, and SKIP_TABS logic stay in one place."""
+    from wip_checker import get_wip_data
+
+    rows = get_wip_data(wip_url)
+    lookup: dict = {}
+    for r in rows:
+        tseg_id = r.get("wip_tseg_id", "")
+        tab     = r.get("wip_tab", "")
+        if not tseg_id or not tab:
+            continue
+        lookup.setdefault(tseg_id, set()).add(tab)
+    return lookup
+
+
+def run_sla_check(
+    df: pd.DataFrame,
+    enrich_tseg: bool = False,
+    progress_cb=None,
+    wip_url: str | None = None,
+    stage_cb=None,
+) -> dict:
     """Main SLA breach detector.
 
     When enrich_tseg=True each awaiting order is enriched with a live TSEG
     API contract lookup so the frontend can surface REGISTERING breaches
     (the COO's 10d+ registering stall metric).  The CSV-upload /run-sla
     endpoint calls this with enrich_tseg=False to preserve its existing
-    behaviour and avoid hitting the TSEG API unnecessarily."""
+    behaviour and avoid hitting the TSEG API unnecessarily.
+
+    When wip_url is supplied (live endpoint only), after the API enrichment
+    each row is tagged with on_wip / wip_tab_found so the SLA tab can show
+    which orders are currently sat on one of Tom's WIP tabs.  stage_cb(text)
+    is fired once before the WIP read so the frontend progress indicator
+    can flip its label to 'Checking WIP sheet...'."""
 
     col_map = {}
     for field, required in {**REQUIRED_FIELDS, **OPTIONAL_FIELDS}.items():
@@ -213,6 +245,49 @@ def run_sla_check(df: pd.DataFrame, enrich_tseg: bool = False, progress_cb=None)
         awaiting["tseg_service_start"] = ""
         awaiting["registering_breach"] = False
 
+    # ── WIP presence check (live endpoint only) ───────────────────────
+    # on_wip values:
+    #   True  — TSEG ID is on one or more WIP tabs (wip_tab_found populated)
+    #   False — TSEG ID is nowhere on the WIP sheet
+    #   None  — WIP sheet could not be read (frontend shows a muted dash)
+    wip_checked = False
+    wip_failed  = False
+    not_on_wip_count = 0
+    if wip_url and not awaiting.empty:
+        if stage_cb:
+            try:
+                stage_cb("Checking WIP sheet...")
+            except Exception:
+                pass
+        try:
+            wip_lookup = _build_wip_presence_lookup(wip_url)
+            wip_checked = True
+        except Exception:
+            wip_lookup = {}
+            wip_failed = True
+
+        on_wip_vals, tab_found_vals = [], []
+        for tid in awaiting[tseg_col].astype(str).tolist():
+            if wip_failed:
+                on_wip_vals.append(None)
+                tab_found_vals.append("")
+                continue
+            tabs = wip_lookup.get(tid)
+            if tabs:
+                on_wip_vals.append(True)
+                # Sorted so the tab order is deterministic between runs.
+                tab_found_vals.append(", ".join(sorted(tabs)))
+            else:
+                on_wip_vals.append(False)
+                tab_found_vals.append("")
+        awaiting["on_wip"]         = on_wip_vals
+        awaiting["wip_tab_found"]  = tab_found_vals
+        if wip_checked:
+            not_on_wip_count = int(sum(1 for v in on_wip_vals if v is False))
+    else:
+        awaiting["on_wip"]        = None
+        awaiting["wip_tab_found"] = ""
+
     awaiting = awaiting.sort_values("days_elapsed", ascending=False)
 
     # Bill name (e.g. "Octopus - Gas") is preferred over plain supplier name
@@ -242,7 +317,7 @@ def run_sla_check(df: pd.DataFrame, enrich_tseg: bool = False, progress_cb=None)
     carry_cols = [c for c in carry_cols if c and c in awaiting.columns]
     extra_cols = ["days_elapsed", "rag", "fuel", "cohort", "cohort_days",
                   "tseg_service_name", "tseg_order_status", "tseg_service_start",
-                  "registering_breach"]
+                  "registering_breach", "on_wip", "wip_tab_found"]
     all_row_cols = list(dict.fromkeys(carry_cols + [c for c in extra_cols if c in awaiting.columns]))
     result = awaiting[all_row_cols].copy().fillna("")
 
@@ -276,7 +351,10 @@ def run_sla_check(df: pd.DataFrame, enrich_tseg: bool = False, progress_cb=None)
             "registering_breach":  registering_breach_count,
             "not_ordered":         not_ordered_count,
             "active":              active_count,
+            "not_on_wip":          not_on_wip_count,
         },
+        "wip_checked": bool(wip_checked),
+        "wip_failed":  bool(wip_failed),
         "supplier_breakdown": supplier_breakdown,
         "columns":            out_cols,
         "rows":               result.to_dict(orient="records"),

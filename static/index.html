@@ -714,6 +714,10 @@
           <div class="metric-label">Active</div>
           <div class="metric-value green" id="slm-active"></div>
         </div>
+        <div class="metric-card" id="slm-notonwip-card" style="display:none;">
+          <div class="metric-label">Not on WIP</div>
+          <div class="metric-value red" id="slm-notonwip"></div>
+        </div>
       </div>
 
       <div id="sla-supplier-breakdown"></div>
@@ -838,8 +842,11 @@
     let slaRegFilter = false    // "Registering 10d+" filter
     let slaNotOrdFilter = false // "Not ordered" filter
     let slaActiveFilter = false // "Active" filter
+    let slaNotOnWipFilter = false // "Not on WIP" filter
     let slaColMeta = {}         // Column metadata from backend (for CSV export)
     let slaEnriched = false     // Was the last run TSEG-enriched?
+    let slaWipChecked = false   // Did the last run include the WIP presence check?
+    let slaWipFailed = false    // Did the WIP presence read fail (muted dash)?
 
     let activeTab = 'gas'
     let isDark = localStorage.getItem('theme') === 'dark'
@@ -1252,6 +1259,15 @@
       document.getElementById('slm-reg').textContent = data.summary.registering_breach || 0
       document.getElementById('slm-notord').textContent = data.summary.not_ordered || 0
       document.getElementById('slm-active').textContent = data.summary.active || 0
+      slaWipChecked = !!data.wip_checked
+      slaWipFailed  = !!data.wip_failed
+      const notOnWipCard = document.getElementById('slm-notonwip-card')
+      if (slaWipChecked && !slaWipFailed) {
+        document.getElementById('slm-notonwip').textContent = data.summary.not_on_wip || 0
+        notOnWipCard.style.display = ''
+      } else {
+        notOnWipCard.style.display = 'none'
+      }
       document.getElementById('sla-local-metrics').style.display = 'grid'
 
       const badge = document.getElementById('badge-sla')
@@ -1282,23 +1298,28 @@
       slaColMeta = data.col_meta || {}
       slaEnriched = !!data.enriched
       slaSortCol = 'days_elapsed'; slaSortAsc = false; slaSearchQuery = ''
-      slaRegFilter = false; slaNotOrdFilter = false; slaActiveFilter = false
+      slaRegFilter = false; slaNotOrdFilter = false; slaActiveFilter = false; slaNotOnWipFilter = false
       document.getElementById('sla-search').value = ''
       document.getElementById('sla-search-bar').style.display = 'block'
 
       // Render API-status filter buttons — only shown when TSEG enrichment ran.
       const filtersDiv = document.getElementById('sla-filters')
+      let filtersHtml = ''
       if (slaEnriched) {
         const regCount  = data.summary.registering_breach || 0
         const noCount   = data.summary.not_ordered || 0
         const actCount  = data.summary.active || 0
-        filtersDiv.innerHTML =
+        filtersHtml =
           '<button id="sla-filter-reg" class="filter-btn registering-breach" onclick="toggleSLAStatusFilter(\'reg\')">Registering 10d+ (' + regCount + ')</button>' +
           '<button id="sla-filter-notord" class="filter-btn not-ordered" onclick="toggleSLAStatusFilter(\'notord\')">Not ordered (' + noCount + ')</button>' +
           '<button id="sla-filter-active" class="filter-btn api-active" onclick="toggleSLAStatusFilter(\'active\')">Active (' + actCount + ')</button>'
-      } else {
-        filtersDiv.innerHTML = ''
       }
+      if (slaWipChecked && !slaWipFailed) {
+        const notOnWipCount = data.summary.not_on_wip || 0
+        filtersHtml +=
+          '<button id="sla-filter-notonwip" class="filter-btn not-on-wip" onclick="toggleSLAStatusFilter(\'notonwip\')">Not on WIP (' + notOnWipCount + ')</button>'
+      }
+      filtersDiv.innerHTML = filtersHtml
 
       applySLAFilters()
     }
@@ -1306,15 +1327,18 @@
     function toggleSLAStatusFilter(which) {
       // Toggle the requested filter — multiple can be active simultaneously
       // so the team can combine (e.g. Registering 10d+ AND Not ordered).
-      if (which === 'reg')     slaRegFilter = !slaRegFilter
-      if (which === 'notord')  slaNotOrdFilter = !slaNotOrdFilter
-      if (which === 'active')  slaActiveFilter = !slaActiveFilter
-      const regBtn  = document.getElementById('sla-filter-reg')
-      const noBtn   = document.getElementById('sla-filter-notord')
-      const actBtn  = document.getElementById('sla-filter-active')
-      if (regBtn)  regBtn.classList.toggle('active', slaRegFilter)
-      if (noBtn)   noBtn.classList.toggle('active', slaNotOrdFilter)
-      if (actBtn)  actBtn.classList.toggle('active', slaActiveFilter)
+      if (which === 'reg')       slaRegFilter = !slaRegFilter
+      if (which === 'notord')    slaNotOrdFilter = !slaNotOrdFilter
+      if (which === 'active')    slaActiveFilter = !slaActiveFilter
+      if (which === 'notonwip')  slaNotOnWipFilter = !slaNotOnWipFilter
+      const regBtn   = document.getElementById('sla-filter-reg')
+      const noBtn    = document.getElementById('sla-filter-notord')
+      const actBtn   = document.getElementById('sla-filter-active')
+      const notwBtn  = document.getElementById('sla-filter-notonwip')
+      if (regBtn)   regBtn.classList.toggle('active', slaRegFilter)
+      if (noBtn)    noBtn.classList.toggle('active', slaNotOrdFilter)
+      if (actBtn)   actBtn.classList.toggle('active', slaActiveFilter)
+      if (notwBtn)  notwBtn.classList.toggle('active', slaNotOnWipFilter)
       applySLAFilters()
     }
 
@@ -1330,13 +1354,14 @@
       // API-status filters combine via OR when multiple are active (e.g. show
       // rows that are Registering 10d+ OR Not ordered OR Active). When none are
       // active all rows pass through.
-      const anyStatusFilter = slaRegFilter || slaNotOrdFilter || slaActiveFilter
+      const anyStatusFilter = slaRegFilter || slaNotOrdFilter || slaActiveFilter || slaNotOnWipFilter
       if (anyStatusFilter) {
         rows = rows.filter(r => {
           const st = String(r.tseg_order_status || '').toUpperCase().trim()
           if (slaRegFilter && (r.registering_breach === true || r.registering_breach === 'True')) return true
           if (slaNotOrdFilter && (st === 'NOT_ORDERED' || st === 'NOT ORDERED')) return true
           if (slaActiveFilter && st === 'ACTIVE') return true
+          if (slaNotOnWipFilter && r.on_wip === false) return true
           return false
         })
       }
@@ -1355,12 +1380,19 @@
     function _slaColumnsForTable() {
       if (!slaEnriched) return slaCols.slice()
       const cols = slaCols.slice()
-      const ragIdx = cols.indexOf('rag')
-      // Remove any already-present duplicates of the TSEG columns so
+      // Remove any already-present duplicates of injected columns so
       // re-renders don't stack them.
-      const cleaned = cols.filter(c => c !== 'tseg_order_status' && c !== 'tseg_service_name')
+      const cleaned = cols.filter(c =>
+        c !== 'tseg_order_status' && c !== 'tseg_service_name' && c !== 'wip_tab_found'
+      )
       const insertAt = cleaned.indexOf('rag') + 1
-      cleaned.splice(insertAt, 0, 'tseg_order_status', 'tseg_service_name')
+      // Order: API STATUS, API SERVICE, WIP TAB — WIP TAB sits after the
+      // service name and before the FUEL column (which comes from slaCols).
+      const injected = ['tseg_order_status', 'tseg_service_name']
+      // Show the WIP TAB column whenever the live run attempted a WIP read —
+      // success shows pill badges, failure shows muted dashes (no column flip).
+      if (slaWipChecked || slaWipFailed) injected.push('wip_tab_found')
+      cleaned.splice(insertAt, 0, ...injected)
       return cleaned
     }
 
@@ -1380,6 +1412,7 @@
         if (col === 'fuel') return fuelPill(row[col])
         if (col === 'tseg_order_status') return row[col] ? _tsegStatusBadge(row[col]) : '<span style="color:var(--text-muted);">—</span>'
         if (col === 'tseg_service_name') return row[col] || '<span style="color:var(--text-muted);">—</span>'
+        if (col === 'wip_tab_found') return _slaWipPresenceCell(row)
         return row[col] ?? ''
       })
       wrap.style.display = 'block'; wrap.classList.add('fade-in')
@@ -1403,6 +1436,8 @@
       ['API Status',            'tseg_order_status'],
       ['TSEG Service Name',     'tseg_service_name'],
       ['TSEG Service Start',    'tseg_service_start','date'],
+      ['On WIP',                'on_wip',            'bool'],
+      ['WIP Tab Found',         'wip_tab_found'],
       ['Registering Breach',    'registering_breach','bool'],
       ['Cohort',                'cohort'],
       ['Fuel',                  'fuel'],
@@ -1465,7 +1500,11 @@
           } else if (formatter === 'rag') {
             val = ragLabels[val] || val || ''
           } else if (formatter === 'bool') {
-            val = (val === true || val === 'True' || val === 'true') ? 'TRUE' : 'FALSE'
+            // Blank when the upstream value is missing so fields like On WIP
+            // don't read as FALSE on the CSV-upload path (which doesn't run
+            // the WIP presence check at all).
+            if (raw === '' || raw == null) val = ''
+            else val = (val === true || val === 'True' || val === 'true') ? 'TRUE' : 'FALSE'
           } else if (formatter === 'date') {
             val = _fmtDateDDMMYYYY(val)
           }
@@ -1904,6 +1943,21 @@
     function _wipTabCell(val) {
       if (!val) return '<span style="color:var(--text-muted);font-size:11px;">Not on WIP</span>'
       return '<span class="pill ' + tabPill(val) + '">' + tabDisplay(val) + '</span>'
+    }
+    // SLA tab cell — distinct from _wipTabCell because it has three states:
+    //   sheet read error  → muted dash
+    //   on one or more tabs → coloured pill(s) using the WIP module palette
+    //   on no tabs          → red "Not on WIP" pill
+    function _slaWipPresenceCell(row) {
+      if (slaWipFailed || row.on_wip === '' || row.on_wip == null) {
+        return '<span style="color:var(--text-muted);">—</span>'
+      }
+      if (row.on_wip === false || row.on_wip === 'False') {
+        return '<span class="pill pill-red">Not on WIP</span>'
+      }
+      const tabs = String(row.wip_tab_found || '').split(',').map(t => t.trim()).filter(Boolean)
+      if (!tabs.length) return '<span class="pill pill-red">Not on WIP</span>'
+      return tabs.map(t => '<span class="pill ' + tabPill(t) + '">' + tabDisplay(t) + '</span>').join(' ')
     }
     function _tsegStatusBadge(status) {
       if (!status) return ''
