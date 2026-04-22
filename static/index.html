@@ -36,6 +36,7 @@
       --pill-blue-bg: #DBEAFE; --pill-blue-fg: #2563EB;
       --pill-gray-bg: #F1F5F9; --pill-gray-fg: #475569;
       --pill-purple-bg: #EDE9FE; --pill-purple-fg: #7C3AED;
+      --pill-pink-bg: #FCE7F3; --pill-pink-fg: #DB2777;
       --table-head-bg: #F8FAFC;
       --table-hover: #F8FAFC;
       --error-bg: #FEF2F2; --error-border: #FECACA; --error-fg: #DC2626;
@@ -58,6 +59,7 @@
       --pill-blue-bg: #0F1F3D; --pill-blue-fg: #60A5FA;
       --pill-gray-bg: #21262D; --pill-gray-fg: #8B949E;
       --pill-purple-bg: #1E1A3D; --pill-purple-fg: #A78BFA;
+      --pill-pink-bg: #3D1428; --pill-pink-fg: #F9A8D4;
       --table-head-bg: #0D1117;
       --table-hover: #1C2128;
       --error-bg: #3D1515; --error-border: #5C1D1D; --error-fg: #F87171;
@@ -158,6 +160,7 @@
     .pill-blue { background: var(--pill-blue-bg); color: var(--pill-blue-fg); }
     .pill-gray { background: var(--pill-gray-bg); color: var(--pill-gray-fg); }
     .pill-purple { background: var(--pill-purple-bg); color: var(--pill-purple-fg); }
+    .pill-pink { background: var(--pill-pink-bg); color: var(--pill-pink-fg); }
 
     /* ── DROP ZONES ────────────────────────────────────────────────── */
     .drop-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
@@ -1944,9 +1947,28 @@
       if (!val) return '<span style="color:var(--text-muted);font-size:11px;">Not on WIP</span>'
       return '<span class="pill ' + tabPill(val) + '">' + tabDisplay(val) + '</span>'
     }
+    // SLA-only tab palette — intentionally separate from TAB_PILLS so the WIP
+    // cross-reference module's colours can evolve independently. Keys are
+    // matched case-insensitively against the tab name (or variants of it)
+    // so small drift in the TSEG WIP sheet doesn't drop into the grey default.
+    const SLA_TAB_PILLS = {
+      'objections':                'pill-red',
+      'missing meter information': 'pill-amber',
+      'gas deleted':               'pill-purple',
+      'gas deketed':               'pill-purple', // typo variant seen in Tom's sheet
+      'switch issues':             'pill-orange',
+      'missing tenant details':    'pill-pink',
+      'api order errors':          'pill-gray',
+      'et requests':               'pill-green',
+    }
+    function _slaTabPill(tab) {
+      const key = String(tab || '').trim().toLowerCase()
+      return SLA_TAB_PILLS[key] || 'pill-gray'
+    }
+
     // SLA tab cell — distinct from _wipTabCell because it has three states:
     //   sheet read error  → muted dash
-    //   on one or more tabs → coloured pill(s) using the WIP module palette
+    //   on one or more tabs → coloured pill(s) using the SLA palette
     //   on no tabs          → red "Not on WIP" pill
     function _slaWipPresenceCell(row) {
       if (slaWipFailed || row.on_wip === '' || row.on_wip == null) {
@@ -1957,7 +1979,7 @@
       }
       const tabs = String(row.wip_tab_found || '').split(',').map(t => t.trim()).filter(Boolean)
       if (!tabs.length) return '<span class="pill pill-red">Not on WIP</span>'
-      return tabs.map(t => '<span class="pill ' + tabPill(t) + '">' + tabDisplay(t) + '</span>').join(' ')
+      return tabs.map(t => '<span class="pill ' + _slaTabPill(t) + '">' + tabDisplay(t) + '</span>').join(' ')
     }
     function _tsegStatusBadge(status) {
       if (!status) return ''

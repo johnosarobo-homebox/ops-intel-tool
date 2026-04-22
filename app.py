@@ -329,7 +329,11 @@ def run_sla_live(
 
     # WIP presence check is best-effort — if the URL is missing we still run
     # the SLA check (the frontend just hides the WIP TAB column in that case).
-    wip_url_env = os.environ.get("WIP_SHEET_URL", "").strip() or None
+    # Note: TSEG_WIP_SHEET_URL points at Tom's multi-tab TSEG WIP sheet (the
+    # one users paste into the WIP cross-reference tab). WIP_SHEET_URL is a
+    # different sheet — the single-tab Homebox Trevor export — so we must
+    # not reuse it here or every row comes back tagged "Sheet1".
+    wip_url_env = os.environ.get("TSEG_WIP_SHEET_URL", "").strip() or None
 
     try:
         result = run_sla_check(
